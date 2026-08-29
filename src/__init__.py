@@ -1,3 +1,1 @@
-"""Code Mate - 编程智能体"""
-
-__version__ = "0.1.0"
+﻿"""CodeMate: 树形对话历史 + Lane 分支的 AI 编程助手。"""

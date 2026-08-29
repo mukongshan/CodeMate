@@ -1,90 +1,115 @@
-# Code Mate - 编程智能体
+# CodeMate
 
-一个从零构建的编程智能体，能够通过与大语言模型交互，自主完成读写文件、执行命令等编程任务。
-
-## 项目特点
-
-- 🚀 无框架依赖：不使用任何 agent 框架，核心逻辑完全自主实现
-- 🛠️ 工具系统：支持文件读写、命令执行、代码搜索等工具
-- 💬 对话管理：完整的上下文和历史管理
-- 🔄 智能循环：自主判断任务完成与终止条件
-- ⚡ 错误处理：完善的异常捕获和重试机制
+一个支持树形对话历史和 Lane 分支管理的编程智能体。
 
 ## 快速开始
 
-### 环境要求
-
-- Python 3.8+
-
-### 安装
+### 1. 环境准备
 
 ```bash
+# 安装依赖
 pip install -r requirements.txt
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，填入你的 API Key
 ```
 
-### 配置
-
-创建 `.env` 文件并配置你的 API key：
-
-```env
-# OpenAI API（或兼容的其他模型）
-OPENAI_API_KEY=your_api_key_here
-OPENAI_BASE_URL=https://api.openai.com/v1  # 可选，使用其他兼容服务时配置
-MODEL_NAME=gpt-4  # 使用的模型名称
-```
-
-### 运行
+### 2. 运行后端
 
 ```bash
 python main.py
 ```
 
-## 架构设计
+服务将在 http://127.0.0.1:8000 启动。
+
+### 3. API 文档
+
+访问 http://127.0.0.1:8000/docs 查看自动生成的 API 文档。
+
+## 核心功能
+
+- **树形对话历史**：每条消息是树中的一个节点，支持分叉和回溯
+- **Lane 分支管理**：类似 Git 分支，可以同时探索多个方案
+- **六个核心工具**：
+  - `read_file` - 读取文件内容
+  - `write_file` - 写入文件
+  - `edit_file` - 精确编辑文件
+  - `bash` - 执行 shell 命令
+  - `glob` - 文件搜索
+  - `grep` - 内容搜索
+- **三级权限控制**：SAFE（自动放行）/ WRITE（workspace 内自动放行）/ DANGEROUS（需用户确认）
+- **子 Agent 系统**：将子任务委托给独立上下文的只读 Agent
+
+## 项目结构
 
 ```
-code-mate/
+CodeMate/
+├── main.py                      # FastAPI 应用入口
 ├── src/
-│   ├── agent/          # Agent 核心逻辑
-│   ├── llm/            # LLM 接口封装
-│   ├── tools/          # 工具系统
-│   ├── context/        # 对话上下文管理
-│   └── utils/          # 工具函数
-├── tests/              # 测试
-├── examples/           # 示例任务
-└── main.py             # 程序入口
+│   ├── agent/                   # Agent 主循环
+│   │   ├── loop.py             # 核心执行循环
+│   │   ├── providers.py        # MessageProvider 抽象
+│   │   ├── state.py            # 运行状态
+│   │   └── prompts.py          # 系统提示词
+│   ├── storage/                 # 树形历史存储
+│   │   ├── session_storage.py  # Entry 树管理
+│   │   ├── lane_manager.py     # Lane 指针管理
+│   │   └── models.py           # 数据模型
+│   ├── llm/                     # LLM 接口层
+│   │   ├── client.py           # 统一客户端 + 重试
+│   │   ├── providers.py        # OpenAI/DeepSeek Provider
+│   │   └── events.py           # 流式事件定义
+│   ├── tools/                   # 工具系统
+│   │   ├── registry.py         # 工具注册表
+│   │   ├── base.py             # Tool 基类
+│   │   ├── file_tools.py       # 文件操作工具
+│   │   ├── exec_tool.py        # 命令执行工具
+│   │   ├── search_tools.py     # 搜索工具
+│   │   └── subagent_tool.py    # 子 Agent 工具
+│   ├── permission/              # 权限控制
+│   │   ├── manager.py          # 权限管理器
+│   │   └── rules.py            # 安全规则
+│   ├── api/                     # Web API 层
+│   │   ├── routes.py           # REST 路由
+│   │   ├── ws.py               # WebSocket 端点
+│   │   ├── schemas.py          # 请求/响应模型
+│   │   └── session_service.py  # Session 管理
+│   ├── errors/                  # 错误类型
+│   ├── observability/           # 日志系统
+│   └── config.py               # 配置加载
+├── docs/                        # 设计文档
+├── tests/                       # 测试
+└── data/sessions/              # 运行时数据（JSONL）
 ```
 
-## 核心模块
+## 设计文档
 
-### Agent 核心
-- 主循环控制
-- 任务规划与执行
-- 终止条件判断
+详细的系统设计和实现细节见 `docs/` 目录：
 
-### LLM 接口
-- 模型调用封装
-- Tool calling 处理
-- 流式输出支持
+- [功能设计/00-首页.md](docs/功能设计/00-首页.md) - 项目概述和文档导航
+- [功能设计/01-系统架构概览.md](docs/功能设计/01-系统架构概览.md) - 整体架构
+- [功能设计/02-数据与存储层/02-树形对话历史系统.md](docs/功能设计/02-数据与存储层/02-树形对话历史系统.md) - 核心差异化功能
+- [代码设计/00-总览与目录结构.md](docs/代码设计/00-总览与目录结构.md) - 代码组织
 
-### 工具系统
-- 文件读写工具
-- 命令执行工具
-- 代码搜索工具
-- 自定义工具扩展
+## 开发
 
-### 上下文管理
-- 对话历史存储
-- Token 计数与控制
-- 上下文压缩策略
+```bash
+# 运行测试
+pytest
 
-## 开发进度
+# 代码格式化
+black src/ tests/
 
-- [ ] 基础架构搭建
-- [ ] LLM 接口实现
-- [ ] 工具系统实现
-- [ ] Agent 主循环
-- [ ] 错误处理完善
-- [ ] 演示案例
+# 类型检查
+mypy src/
+```
+
+## 技术栈
+
+- **后端**: Python 3.11+, FastAPI, WebSocket
+- **存储**: JSONL (追加式存储)
+- **LLM**: OpenAI API / DeepSeek API
 
 ## License
 

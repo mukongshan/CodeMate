@@ -1,98 +1,104 @@
-#!/usr/bin/env python3
-"""
-Code Mate - 编程智能体主入口
+"""FastAPI 应用入口。
 
-用法：
-    python main.py
+对应代码设计 03 号文档八节。
+
+运行：uvicorn main:app --reload
+或：python main.py
 """
 
-import sys
-import argparse
+from __future__ import annotations
+
+import logging
 from pathlib import Path
-from dotenv import load_dotenv
 
-from src.agent.agent import CodingAgent
-from src.utils.logger import setup_logger
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-# 加载环境变量
-load_dotenv()
+from src.api.routes import router
+from src.api.session_service import SessionManager
+from src.config import AppConfig
+from src.errors.types import AgentError
 
-def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(
-        description="Code Mate - 编程智能体",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+
+def create_app() -> FastAPI:
+    """构造 FastAPI 应用，挂载路由和中间件。"""
+    config = AppConfig.from_env()
+
+    app = FastAPI(
+        title="CodeMate",
+        description="编程智能体 with 树形对话历史",
+        version="0.1.0",
     )
 
-    parser.add_argument(
-        "--task",
-        type=str,
-        help="直接执行的任务描述"
+    # CORS 中间件：允许前端从不同端口访问
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
-    parser.add_argument(
-        "--workspace",
-        type=str,
-        default="./workspace",
-        help="工作空间目录"
+    # 全局状态：SessionManager 单例
+    app.state.session_manager = SessionManager(config)
+    app.state.config = config
+
+    # 挂载路由
+    app.include_router(router)
+
+    # 异常处理器：把 AgentError 转成统一格式的 JSON
+    @app.exception_handler(AgentError)
+    async def agent_error_handler(request: Request, exc: AgentError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "suggestions": getattr(exc, "suggestions", []),
+                }
+            },
+        )
+
+    @app.get("/")
+    async def root():
+        return {
+            "service": "CodeMate",
+            "version": "0.1.0",
+            "status": "running",
+        }
+
+    @app.get("/health")
+    async def health():
+        return {"status": "healthy"}
+
+    logger.info(
+        "应用启动完成，workspace=%s, data_dir=%s",
+        config.workspace,
+        config.data_dir,
     )
 
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="显示详细日志"
-    )
+    return app
 
-    args = parser.parse_args()
 
-    # 设置日志
-    logger = setup_logger(verbose=args.verbose)
+app = create_app()
 
-    # 创建工作空间
-    workspace = Path(args.workspace)
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    # 创建 agent
-    agent = CodingAgent(workspace=workspace)
-
-    logger.info("Code Mate 启动成功")
-    logger.info(f"工作空间: {workspace.absolute()}")
-
-    # 如果指定了任务，直接执行
-    if args.task:
-        logger.info(f"执行任务: {args.task}")
-        result = agent.execute(args.task)
-        logger.info(f"任务完成: {result}")
-        return
-
-    # 交互式模式
-    logger.info("进入交互模式，输入 'exit' 或 'quit' 退出")
-    print("\n" + "="*60)
-    print("欢迎使用 Code Mate 编程智能体")
-    print("请描述你想要完成的编程任务")
-    print("="*60 + "\n")
-
-    while True:
-        try:
-            user_input = input("\n👤 你: ").strip()
-
-            if not user_input:
-                continue
-
-            if user_input.lower() in ['exit', 'quit', 'q']:
-                print("\n再见！")
-                break
-
-            print("\n🤖 Agent 正在思考...\n")
-            result = agent.execute(user_input)
-            print(f"\n✅ 任务完成\n")
-
-        except KeyboardInterrupt:
-            print("\n\n中断执行")
-            break
-        except Exception as e:
-            logger.error(f"执行出错: {e}", exc_info=True)
-            print(f"\n❌ 出错了: {e}\n")
 
 if __name__ == "__main__":
-    main()
+    config = AppConfig.from_env()
+    uvicorn.run(
+        "main:app",
+        host=config.host,
+        port=config.port,
+        reload=config.debug,
+        log_level="info",
+    )
