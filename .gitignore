@@ -1,0 +1,118 @@
+# Project specific
+res/
+local_docs/
+tests/report
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node.js / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+.cache/
+.parcel-cache/
+.npm/
+.yarn/
+yarn-error.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+config.local.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Logs
+logs/
+*.log
+backend/logs/
+frontend/logs/
+
+# Runtime data
+backend/data/sessions/
+data/sessions/
+*.jsonl
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Agent workspace
+workspace/
+chat_history/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~.nib
+.~lock.*
+
+# Submissions
+*.zip
+README.txt
+*.mp4
+
+# Build outputs
+*.out
+*.o
+*.obj
+*.exe
+*.dll
+*.dylib
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+.nyc_output/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories
+.cursor/
+.claude/
