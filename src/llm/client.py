@@ -1,120 +1,158 @@
-"""
-LLM 客户端封装
+"""LLM 客户端：Provider + 指数退避重试。
 
-负责与大语言模型交互，处理：
-1. API 调用
-2. Tool calling 请求与响应解析
-3. 流式输出
-4. 错误重试
+对应功能设计 06-LLM接口层 5.2 节。
+
+不实现响应缓存（06 号文档六节标注为非首版必需）：默认 temperature=0.7，
+缓存命中率本身就低，而 Agent 每轮上下文都在增长，键几乎不会重复。
 """
 
+from __future__ import annotations
+
+import asyncio
+import logging
 import os
-import json
-from typing import List, Dict, Any, Optional
+from typing import AsyncIterator, Optional
 
-from openai import OpenAI
-from ..utils.logger import get_logger
+from ..errors.types import CODE_LLM_ERROR, LLMAPIError
+from .events import DoneEvent, ErrorEvent, LLMEvent, Message, TextDeltaEvent
+from .providers import DeepSeekProvider, LLMProvider, OpenAIProvider
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+
+
+class RetryPolicy:
+    """指数退避策略（06 号文档 5.2 节）。"""
+
+    def __init__(
+        self,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
+    ) -> None:
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+
+    def get_delay(self, attempt: int) -> float:
+        """第 attempt 次重试前的等待秒数：1s, 2s, 4s …，上限 max_delay。"""
+        return min(self.base_delay * (2**attempt), self.max_delay)
 
 
 class LLMClient:
-    """LLM 客户端"""
+    """统一入口，对上层屏蔽重试细节。"""
 
-    def __init__(self, model_name: Optional[str] = None):
-        """
-        初始化 LLM 客户端
+    def __init__(
+        self, provider: LLMProvider, retry_policy: Optional[RetryPolicy] = None
+    ) -> None:
+        self.provider = provider
+        self.retry_policy = retry_policy or RetryPolicy()
 
-        Args:
-            model_name: 模型名称，默认从环境变量读取
-        """
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("未设置 OPENAI_API_KEY 环境变量")
+    @property
+    def model(self) -> str:
+        return self.provider.model
 
-        self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        self.model_name = model_name or os.getenv("MODEL_NAME", "gpt-4")
-        self.max_tokens = int(os.getenv("MAX_TOKENS", "4096"))
-        self.temperature = float(os.getenv("TEMPERATURE", "0.7"))
-
-        # 创建 OpenAI 客户端
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
-
-        logger.info(f"LLM 客户端初始化完成，模型: {self.model_name}")
-
-    def chat(
+    async def chat(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-        stream: bool = False
-    ) -> Dict[str, Any]:
+        messages: list[Message],
+        tools: Optional[list[dict]] = None,
+        **kwargs: object,
+    ) -> AsyncIterator[LLMEvent]:
+        """流式对话，可重试错误对调用方不可见。
+
+        一个容易踩的坑：重试意味着整个请求从头重来，如果上一次尝试已经吐了一些
+        ``text_delta`` 给前端，重试后会重复吐一遍，UI 上就是文字重复。所以这里
+        **只在还没产出任何文本时才重试**——已经开始输出的请求失败了就直接把错误
+        传出去，让用户看到一次不完整的回答比看到重复拼接的乱码好。
         """
-        调用 LLM 进行对话
+        attempt = 0
 
-        Args:
-            messages: 对话历史消息列表
-            tools: 可用工具的 schema 列表
-            stream: 是否使用流式输出
+        while True:
+            produced_text = False
+            error_event: Optional[ErrorEvent] = None
 
-        Returns:
-            LLM 响应，格式：
-            {
-                "content": "回复内容",
-                "tool_calls": [
-                    {
-                        "id": "call_xxx",
-                        "function": {
-                            "name": "tool_name",
-                            "arguments": {...}
-                        }
-                    }
-                ]
-            }
-        """
-        try:
-            # 构建请求参数
-            kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-                "max_tokens": self.max_tokens,
-                "temperature": self.temperature,
-            }
+            try:
+                async for event in self.provider.chat(messages, tools, **kwargs):
+                    if isinstance(event, ErrorEvent):
+                        error_event = event
+                        break
+                    if isinstance(event, TextDeltaEvent):
+                        produced_text = True
+                    yield event
+                    if isinstance(event, DoneEvent):
+                        return
+            except Exception as exc:  # noqa: BLE001
+                error_event = ErrorEvent(
+                    message=f"{exc.__class__.__name__}: {exc}", retryable=False
+                )
 
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+            if error_event is None:
+                # 流正常结束但没有 DoneEvent，当成一次完成，避免死循环
+                return
 
-            logger.debug(f"调用 LLM，消息数: {len(messages)}")
+            can_retry = (
+                error_event.retryable
+                and not produced_text
+                and attempt < self.retry_policy.max_retries
+            )
+            if not can_retry:
+                raise LLMAPIError(
+                    message=error_event.message,
+                    code=CODE_LLM_ERROR,
+                    provider=getattr(self.provider, "name", "unknown"),
+                    retryable=error_event.retryable,
+                    suggestions=(
+                        ["稍后重试", "检查网络连接与 API Key 配额"]
+                        if error_event.retryable
+                        else ["检查 API Key 与模型名是否正确"]
+                    ),
+                )
 
-            # 调用 API
-            response = self.client.chat.completions.create(**kwargs)
+            delay = self.retry_policy.get_delay(attempt)
+            attempt += 1
+            logger.warning(
+                "LLM 调用失败，%.1fs 后重试（第 %d/%d 次）: %s",
+                delay,
+                attempt,
+                self.retry_policy.max_retries,
+                error_event.message,
+            )
+            await asyncio.sleep(delay)
 
-            # 解析响应
-            message = response.choices[0].message
-            result = {}
+    @staticmethod
+    def from_config(config: dict) -> "LLMClient":
+        """按配置构造。``provider`` 取 ``openai`` 或 ``deepseek``。"""
+        provider_name = (config.get("provider") or "openai").lower()
+        retry = RetryPolicy(**(config.get("retry") or {}))
 
-            if message.content:
-                result["content"] = message.content
-                logger.debug(f"LLM 回复: {message.content[:100]}...")
+        temperature = float(config.get("temperature", 0.7))
+        model = config.get("model")
 
-            if message.tool_calls:
-                result["tool_calls"] = []
-                for tool_call in message.tool_calls:
-                    result["tool_calls"].append({
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": json.loads(tool_call.function.arguments)
-                        }
-                    })
-                logger.debug(f"LLM 请求调用工具: {[tc['function']['name'] for tc in result['tool_calls']]}")
+        provider: LLMProvider
+        if provider_name == "deepseek":
+            api_key = config.get("api_key") or os.getenv("DEEPSEEK_API_KEY", "")
+            provider = DeepSeekProvider(
+                api_key=api_key,
+                model=model or "deepseek-chat",
+                base_url=config.get("base_url") or "https://api.deepseek.com",
+                temperature=temperature,
+                max_tokens=int(config.get("max_tokens", 4000)),
+            )
+        elif provider_name == "openai":
+            api_key = config.get("api_key") or os.getenv("OPENAI_API_KEY", "")
+            provider = OpenAIProvider(
+                api_key=api_key,
+                model=model or "gpt-4o-mini",
+                base_url=config.get("base_url") or os.getenv("OPENAI_BASE_URL"),
+                temperature=temperature,
+                max_tokens=int(config.get("max_tokens", 2000)),
+            )
+        else:
+            raise LLMAPIError(
+                message=f"未知的 LLM provider: {provider_name}",
+                code=CODE_LLM_ERROR,
+                provider=provider_name,
+                retryable=False,
+                suggestions=["provider 只支持 openai 或 deepseek"],
+            )
 
-            return result
-
-        except Exception as e:
-            logger.error(f"LLM 调用失败: {e}", exc_info=True)
-            raise
+        return LLMClient(provider=provider, retry_policy=retry)
