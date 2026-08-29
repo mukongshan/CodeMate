@@ -1,0 +1,105 @@
+"""API 层的请求/响应 schema。
+
+对应代码设计 02 号文档 3.3 节。
+
+这里的模型只用于**服务端内部**构造 payload 时的类型检查，不要求前端引入
+同一套 schema——前端用手写 TypeScript interface 对齐即可。
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+# --- WebSocket 信封 ---------------------------------------------------------
+
+
+class WSEnvelope(BaseModel):
+    """所有服务端事件统一包一层，前端只需一个 switch(msg.type) 分发。"""
+
+    type: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+# --- 客户端 → 服务端 --------------------------------------------------------
+
+
+class SendMessageIn(BaseModel):
+    type: Literal["send_message"]
+    content: str
+    lane: Optional[str] = None
+
+
+class PermissionResponseIn(BaseModel):
+    type: Literal["permission_response"]
+    request_id: str
+    action: Literal["allow_once", "allow_always", "deny"]
+
+
+class InterruptRunIn(BaseModel):
+    """P2 功能，先在协议里预留，首版不实现处理逻辑。"""
+
+    type: Literal["interrupt_run"]
+    run_id: Optional[str] = None
+
+
+# --- 服务端 → 客户端的 data 部分 --------------------------------------------
+
+
+class TextDeltaData(BaseModel):
+    message_id: str
+    text: str
+
+
+class ToolCallEndData(BaseModel):
+    call_id: str
+    status: Literal["success", "error"]
+    result: str
+
+
+class PermissionRequestData(BaseModel):
+    request_id: str
+    tool_name: str
+    args: dict
+    risk_level: Literal["low", "medium", "high"]
+    warning: str
+
+
+class SubagentDoneData(BaseModel):
+    subagent_id: str
+    status: Literal["completed", "partial", "error"]
+    content: str
+    details: dict
+
+
+class StatusUpdateData(BaseModel):
+    state: str
+    current_lane: Optional[str] = None
+    current_operation: Optional[str] = None
+
+
+# --- REST 请求体 ------------------------------------------------------------
+
+
+class CreateSessionIn(BaseModel):
+    session_id: Optional[str] = None
+
+
+class CreateLaneIn(BaseModel):
+    name: str
+    from_id: Optional[str] = None
+    description: Optional[str] = None
+
+
+# --- REST 错误响应 ----------------------------------------------------------
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody
