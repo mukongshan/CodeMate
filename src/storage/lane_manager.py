@@ -263,8 +263,8 @@ class LaneManager:
     def compare_lanes(self, lane_a: str, lane_b: str, storage) -> dict:
         """对比两个分支（03 号文档 4.1 节）。
 
-        返回五个键：``common_ancestor`` / ``lane_a_diff`` / ``lane_b_diff`` /
-        ``lane_a_entries`` / ``lane_b_entries``。diff 列表是 root→leaf 顺序，
+        返回六个键：``common_ancestor`` / ``lane_a_diff`` / ``lane_b_diff`` /
+        ``lane_a_entries`` / ``lane_b_entries`` / ``identical``。diff 列表是 root→leaf 顺序，
         **不含公共祖先本身**。
 
         边界情况（03 号文档 1.5.4 节）：如果两个 Lane 指向同一个叶子，路径完全
@@ -282,6 +282,18 @@ class LaneManager:
                 "lane_b_diff": [],
                 "lane_a_entries": [],
                 "lane_b_entries": [],
+                "identical": True,
+            }
+
+        # 两个 Lane 指向同一叶子，路径完全重合
+        if leaf_a == leaf_b:
+            return {
+                "common_ancestor": leaf_a,
+                "lane_a_diff": [],
+                "lane_b_diff": [],
+                "lane_a_entries": [],
+                "lane_b_entries": [],
+                "identical": True,
             }
 
         ancestor = storage.find_common_ancestor(leaf_a, leaf_b)
@@ -299,12 +311,15 @@ class LaneManager:
         diff_a = tail_after(path_a, ancestor)
         diff_b = tail_after(path_b, ancestor)
 
+        identical = len(diff_a) == 0 and len(diff_b) == 0
+
         return {
             "common_ancestor": ancestor,
             "lane_a_diff": [e.id for e in diff_a],
             "lane_b_diff": [e.id for e in diff_b],
             "lane_a_entries": diff_a,
             "lane_b_entries": diff_b,
+            "identical": identical,
         }
 
     # --- 写入 ---------------------------------------------------------------

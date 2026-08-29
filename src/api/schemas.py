@@ -79,6 +79,20 @@ class StatusUpdateData(BaseModel):
     current_operation: Optional[str] = None
 
 
+class LaneCreatedData(BaseModel):
+    lane: str
+    from_id: Optional[str] = None
+
+
+class LaneSwitchedData(BaseModel):
+    lane: str
+    leaf_id: Optional[str] = None
+
+
+class LaneDeletedData(BaseModel):
+    lane: str
+
+
 # --- REST 请求体 ------------------------------------------------------------
 
 

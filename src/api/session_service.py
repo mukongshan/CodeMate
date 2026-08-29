@@ -68,7 +68,7 @@ class SessionRuntime:
         )
 
     async def emit(self, event: str, payload: dict) -> None:
-        if event == "agent_state":
+        if event == "status_update":
             try:
                 self.state = AgentState(payload.get("state", "idle"))
             except ValueError:

@@ -80,7 +80,7 @@ def list_lanes(session_id: str, manager: SessionManager = Depends(get_manager)) 
 
 
 @router.post("/sessions/{session_id}/lanes", status_code=201)
-def create_lane(
+async def create_lane(
     session_id: str,
     body: CreateLaneIn,
     manager: SessionManager = Depends(get_manager),
@@ -92,25 +92,28 @@ def create_lane(
     pointer = runtime.lane_manager.create_lane(
         name=body.name, from_id=from_id, description=body.description
     )
+    await runtime.emit("lane_created", {"lane": pointer.lane, "from_id": pointer.created_from})
     return pointer.to_api_dict()
 
 
 @router.post("/sessions/{session_id}/lanes/{lane}/switch")
-def switch_lane(
+async def switch_lane(
     session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
 ) -> dict:
     runtime = _require_session(manager, session_id)
     pointer = runtime.lane_manager.switch_lane(lane)
+    await runtime.emit("lane_switched", {"lane": pointer.lane, "leaf_id": pointer.leaf_id})
     return pointer.to_api_dict()
 
 
 @router.delete("/sessions/{session_id}/lanes/{lane}", status_code=204, response_model=None)
-def delete_lane(
+async def delete_lane(
     session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
 ) -> None:
     """删除分支指针，不删树中的节点。保护 main 和当前活跃分支。"""
     runtime = _require_session(manager, session_id)
     runtime.lane_manager.delete_lane(lane)
+    await runtime.emit("lane_deleted", {"lane": lane})
 
 
 @router.get("/sessions/{session_id}/lanes/compare")

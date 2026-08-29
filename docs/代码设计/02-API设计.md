@@ -120,6 +120,7 @@
 | `subagent_done` | `subagent_id, status, content, details` | 双通道结果,`status: "completed" \| "partial" \| "error"` |
 | `lane_created` | `lane, from_id` | 新建分支 |
 | `lane_switched` | `lane, leaf_id` | 当前活跃分支变化 |
+| `lane_deleted` | `lane` | 分支已删除 |
 | `permission_request` | `request_id, tool_name, args, risk_level, warning` | 需要用户确认,`risk_level: "low" \| "medium" \| "high"` |
 | `run_started` | `run_id, lane, user_message_id` | 一次 Run 开始 |
 | `run_completed` | `run_id, status, iterations, total_tokens, duration` | 一次 Run 结束 |

@@ -98,7 +98,20 @@ class Agent:
 
     async def _set_state(self, state: AgentState) -> None:
         self.state = state
-        await self._emit("agent_state", {"state": state.value})
+        await self._emit("status_update", {
+            "state": state.value,
+            "current_lane": getattr(self.provider, "lane", None),
+            "current_operation": self._get_operation_label(state)
+        })
+
+    def _get_operation_label(self, state: AgentState) -> str | None:
+        """将状态转换为用户友好的操作描述。"""
+        labels = {
+            AgentState.CALLING_LLM: "正在思考",
+            AgentState.EXECUTING_TOOL: "正在执行工具",
+            AgentState.WAITING_PERMISSION: "等待权限确认",
+        }
+        return labels.get(state)
 
     # --- 主循环 -------------------------------------------------------------
 
@@ -194,12 +207,24 @@ class Agent:
             await self._set_state(AgentState.CALLING_LLM)
 
             messages = self._build_messages()
+            await self._emit("context_loaded", {
+                "message_count": len(messages),
+                "total_tokens": sum(len(m.content or "") // 4 for m in messages)
+            })
+
             text_parts: list[str] = []
             tool_calls: list[ToolCall] = []
             stop_reason = "stop"
 
             message_id = f"{ctx.run_id}-{ctx.iteration}"
             await self._emit("message_start", {"message_id": message_id})
+
+            # 记录 LLM 请求
+            await self._emit("llm_request", {
+                "provider": getattr(self.llm_client.provider, "name", "unknown"),
+                "model": self.llm_client.model,
+                "input_tokens": sum(len(m.content or "") // 4 for m in messages)
+            })
 
             async for event in self.llm_client.chat(messages, tools or None):
                 if isinstance(event, TextDeltaEvent):
@@ -218,6 +243,12 @@ class Agent:
                 elif isinstance(event, DoneEvent):
                     stop_reason = event.stop_reason
                     ctx.total_tokens += int(event.usage.get("total_tokens") or 0)
+                    # 记录 LLM 响应
+                    await self._emit("llm_response", {
+                        "stop_reason": stop_reason,
+                        "output_tokens": int(event.usage.get("completion_tokens") or 0),
+                        "total_tokens": int(event.usage.get("total_tokens") or 0)
+                    })
 
             assistant_text = "".join(text_parts)
             if assistant_text:
