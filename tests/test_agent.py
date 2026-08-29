@@ -1,26 +1,90 @@
-"""
-测试 Agent 基本功能
-"""
+"""测试 Agent 主循环。"""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
-from src.agent.agent import CodingAgent
+
+from src.agent.loop import Agent
+from src.agent.providers import EphemeralMessageProvider
+from src.llm.events import Message, TextDeltaEvent, DoneEvent, ToolCallEvent
+from src.llm.client import LLMClient
+from src.tools.registry import ToolRegistry
+from src.permission.manager import PermissionManager
 
 
-def test_agent_initialization(tmp_path):
-    """测试 Agent 初始化"""
-    agent = CodingAgent(workspace=tmp_path, max_iterations=10)
-    assert agent.workspace == tmp_path
-    assert agent.max_iterations == 10
+class TestAgentLoop:
+    """测试 Agent 执行循环。"""
+
+    @pytest.fixture
+    def mock_llm_client(self):
+        """模拟 LLM 客户端。"""
+        client = MagicMock(spec=LLMClient)
+        client.model = "test-model"
+        return client
+
+    @pytest.fixture
+    def mock_registry(self):
+        """模拟工具注册表。"""
+        registry = MagicMock(spec=ToolRegistry)
+        registry.get_tool_schemas.return_value = []
+        return registry
+
+    @pytest.fixture
+    def mock_permission(self):
+        """模拟权限管理器。"""
+        from src.permission.manager import PermissionDecision
+        perm = MagicMock(spec=PermissionManager)
+        perm.check = AsyncMock(return_value=PermissionDecision(allowed=True, reason="test"))
+        return perm
+
+    @pytest.fixture
+    def agent(self, mock_llm_client, mock_registry, mock_permission):
+        """创建测试 Agent。"""
+        provider = EphemeralMessageProvider(seed_task="Test task")
+
+        agent = Agent(
+            session_id="test",
+            llm_client=mock_llm_client,
+            tool_registry=mock_registry,
+            permission_manager=mock_permission,
+            provider=provider,
+            workspace=Path("."),
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_simple_text_response(self, agent, mock_llm_client):
+        """测试简单文本响应（无工具调用）。"""
+        # 模拟 LLM 返回纯文本
+        async def mock_chat(*args, **kwargs):
+            yield TextDeltaEvent(text="Hello")
+            yield TextDeltaEvent(text=" world")
+            yield DoneEvent(stop_reason="stop", usage={"total_tokens": 10})
+
+        mock_llm_client.chat = mock_chat
+
+        result = await agent.run("Say hello")
+
+        assert result.status == "completed"
+        assert result.final_text == "Hello world"
+        assert result.iterations == 1
+
+    @pytest.mark.asyncio
+    async def test_max_iterations(self, agent, mock_llm_client):
+        """测试达到最大迭代次数。"""
+        # 模拟 LLM 一直要求调用工具
+        async def mock_chat(*args, **kwargs):
+            yield ToolCallEvent(id="call1", name="read_file", arguments={"path": "test.txt"})
+            yield DoneEvent(stop_reason="tool_calls", usage={"total_tokens": 10})
+
+        mock_llm_client.chat = mock_chat
+
+        result = await agent.run("Test", max_steps=3)
+
+        assert result.status == "partial"
+        assert result.iterations == 3
+        assert "达到最大迭代次数" in result.error
 
 
-def test_agent_file_operations(tmp_path):
-    """测试 Agent 文件操作"""
-    agent = CodingAgent(workspace=tmp_path, max_iterations=5)
-
-    # 创建文件
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("test content")
-
-    # 验证文件存在
-    assert test_file.exists()
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
