@@ -46,6 +46,25 @@ TOOL_PERMISSIONS: dict[str, PermissionLevel] = {
 
 RiskLevel = str  # "low" | "medium" | "high"
 
+# PermissionLevel → 前端契约的 risk_level（代码设计 02 号文档 3.2 节）。
+_LEVEL_TO_RISK: dict[str, RiskLevel] = {
+    PermissionLevel.SAFE.value: "low",
+    PermissionLevel.WRITE.value: "medium",
+    PermissionLevel.DANGEROUS.value: "high",
+}
+
+
+def normalize_risk_level(value: str) -> RiskLevel:
+    """把权限层的风险取值折叠成前端契约的 low/medium/high。
+
+    `_ask_user` 传出的本来就是 low/medium/high，直接透传；同时兼容按
+    PermissionLevel 名字（safe/write/dangerous）传入的调用点。两者不加区分地
+    塞进同一张映射表会让 high 被静默降级成 medium，所以先判透传再查表。
+    """
+    if value in ("low", "medium", "high"):
+        return value
+    return _LEVEL_TO_RISK.get(value, "medium")
+
 
 @dataclass
 class PermissionDecision:

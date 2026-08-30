@@ -5,9 +5,12 @@ from fastapi.testclient import TestClient
 from pathlib import Path
 import tempfile
 import shutil
+import asyncio
+from types import SimpleNamespace
 
 from main import create_app
 from src.config import AppConfig
+from src.api.ws import _handle_message
 
 
 @pytest.fixture
@@ -26,7 +29,7 @@ def test_app(temp_dir, monkeypatch):
     monkeypatch.setenv("LOG_DIR", str(temp_dir / "logs"))
     monkeypatch.setenv("WORKSPACE", str(temp_dir / "workspace"))
     monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
 
     (temp_dir / "workspace").mkdir(exist_ok=True)
 
@@ -245,6 +248,141 @@ class TestPermissionAPI:
         assert "allowed" in data
         assert "denied" in data
         assert "tool_breakdown" in data
+
+
+class TestWebSocketEndpoint:
+    """测试 WebSocket 端点是否真的挂载在 app 上。
+
+    这一层过去没有测试，导致 ws router 漏挂载一直没被发现——
+    test_websocket_events.py 是直接构造 Agent 验事件字段的，绕开了 HTTP 层。
+    """
+
+    def test_ws_route_is_mounted(self, test_app):
+        """/ws/{session_id} 必须出现在 app 的路由表里。
+
+        用递归收集：不同 FastAPI 版本对 include_router 的表示不同，有的把子
+        路由摊平进 app.routes，有的留一层 _IncludedRouter 包装——后者把真实
+        子路由挂在 original_router 上，不暴露 routes 属性。WebSocket 路由不
+        进 OpenAPI，所以只能从路由表本身查。
+        """
+
+        def collect(routes):
+            for route in routes:
+                path = getattr(route, "path", None)
+                if path:
+                    yield path
+                yield from collect(getattr(route, "routes", []))
+                nested = getattr(route, "original_router", None)
+                if nested is not None:
+                    yield from collect(getattr(nested, "routes", []))
+
+        assert "/ws/{session_id}" in set(collect(test_app.routes))
+
+    def test_ws_connect_existing_session(self, client):
+        """已存在的 session 能建连，且不会立刻收到 error 事件。"""
+        create_resp = client.post("/api/sessions", json={"session_id": "ws-ok"})
+        assert create_resp.status_code == 201
+
+        with client.websocket_connect("/ws/ws-ok") as ws:
+            # 发一个未知类型的消息：服务端只记日志、不回包也不断开连接。
+            ws.send_json({"type": "__unknown__"})
+            # 再发一个格式错误的 send_message，应当收到 INVALID_REQUEST。
+            ws.send_json({"type": "send_message"})
+            payload = ws.receive_json()
+            assert payload["type"] == "error"
+            assert payload["data"]["code"] == "INVALID_REQUEST"
+
+    def test_ws_connect_unknown_session(self, client):
+        """不存在的 session 建连后收到 SESSION_NOT_FOUND 并被关闭。"""
+        with client.websocket_connect("/ws/does-not-exist") as ws:
+            payload = ws.receive_json()
+            assert payload["type"] == "error"
+            assert payload["data"]["code"] == "SESSION_NOT_FOUND"
+
+    def test_ws_permission_response_unmatched(self, client):
+        """未命中的 permission_response 只记日志，不打断连接。"""
+        client.post("/api/sessions", json={"session_id": "ws-perm"})
+
+        with client.websocket_connect("/ws/ws-perm") as ws:
+            ws.send_json(
+                {
+                    "type": "permission_response",
+                    "request_id": "perm_nonexistent",
+                    "action": "deny",
+                }
+            )
+            # 连接仍然可用：后续的坏消息照样能拿到回包。
+            ws.send_json({"type": "send_message"})
+            payload = ws.receive_json()
+            assert payload["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_send_message_task_allows_permission_response(self):
+        class FakeRuntime:
+            def __init__(self):
+                self.perm_event = asyncio.Event()
+
+            async def run(self, content, lane=None):
+                await self.perm_event.wait()
+                return SimpleNamespace(
+                    run_id="run-1",
+                    status="completed",
+                    iterations=1,
+                    total_tokens=1,
+                    duration=0.1,
+                )
+
+            async def emit(self, *args, **kwargs):
+                return None
+
+            def resolve_permission(self, request_id, action):
+                if request_id == "perm-1" and action == "allow_once":
+                    self.perm_event.set()
+                    return True
+                return False
+
+        runtime = FakeRuntime()
+
+        task = await asyncio.wait_for(
+            _handle_message(runtime, {"type": "send_message", "content": "hello"}),
+            timeout=0.5,
+        )
+        assert task is not None
+
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        await asyncio.wait_for(
+            _handle_message(
+                runtime,
+                {
+                    "type": "permission_response",
+                    "request_id": "perm-1",
+                    "action": "allow_once",
+                },
+            ),
+            timeout=0.5,
+        )
+
+        await asyncio.wait_for(task, timeout=0.5)
+
+
+class TestRiskLevelNormalization:
+    """risk_level 归一化：permission 层传 low/medium/high，不能被降级。"""
+
+    def test_passthrough_and_mapping(self):
+        from src.permission.manager import normalize_risk_level
+
+        # _ask_user 实际传出的取值必须原样透传——high 不能变 medium。
+        assert normalize_risk_level("high") == "high"
+        assert normalize_risk_level("medium") == "medium"
+        assert normalize_risk_level("low") == "low"
+        # 兼容按 PermissionLevel 名字传入的调用点。
+        assert normalize_risk_level("dangerous") == "high"
+        assert normalize_risk_level("write") == "medium"
+        assert normalize_risk_level("safe") == "low"
+        # 未知取值保守落到 medium。
+        assert normalize_risk_level("") == "medium"
 
 
 if __name__ == "__main__":

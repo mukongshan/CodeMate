@@ -21,7 +21,7 @@ from ..agent.state import AgentState, RunResult
 from ..config import AppConfig
 from ..llm.client import LLMClient
 from ..observability.logger import StructuredLogger
-from ..permission.manager import PermissionManager
+from ..permission.manager import PermissionManager, normalize_risk_level
 from ..storage.lane_manager import LaneManager
 from ..storage.session_storage import SessionStorage
 from ..tools.registry import ToolRegistry
@@ -49,6 +49,7 @@ class SessionRuntime:
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
         self._run_lock = asyncio.Lock()
         self._emit: Optional[EmitFn] = None
+        self._emitter_token: Optional[str] = None
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self.state = AgentState.IDLE
 
@@ -61,11 +62,18 @@ class SessionRuntime:
 
     # --- 连接管理 -----------------------------------------------------------
 
-    def set_emitter(self, emit: Optional[EmitFn]) -> None:
+    def set_emitter(self, emit: EmitFn, token: str) -> None:
         self._emit = emit
-        self.permission_manager.ask_user_callback = (
-            self._ask_user if emit is not None else None
-        )
+        self._emitter_token = token
+        self.permission_manager.ask_user_callback = self._ask_user
+
+    def clear_emitter(self, token: str) -> bool:
+        if self._emitter_token != token:
+            return False
+        self._emit = None
+        self._emitter_token = None
+        self.permission_manager.ask_user_callback = None
+        return True
 
     async def emit(self, event: str, payload: dict) -> None:
         if event == "status_update":
@@ -95,9 +103,7 @@ class SessionRuntime:
                 "request_id": request_id,
                 "tool_name": request.get("tool_name", ""),
                 "args": request.get("args", {}),
-                "risk_level": _RISK_LEVEL_MAP.get(
-                    request.get("risk_level", ""), "medium"
-                ),
+                "risk_level": normalize_risk_level(request.get("risk_level", "")),
                 "warning": request.get("warning", ""),
             },
         )

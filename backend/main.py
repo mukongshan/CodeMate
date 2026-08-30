@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from src.api.routes import router
 from src.api.session_service import SessionManager
+from src.api.ws import router as ws_router
 from src.config import AppConfig
 from src.errors.types import AgentError
 
@@ -42,7 +43,7 @@ def create_app() -> FastAPI:
     # CORS 中间件：允许前端从不同端口访问
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_origins=config.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -52,8 +53,9 @@ def create_app() -> FastAPI:
     app.state.session_manager = SessionManager(config)
     app.state.config = config
 
-    # 挂载路由
+    # 挂载路由：REST 走 /api 前缀，WebSocket 挂在根上（/ws/{session_id}）
     app.include_router(router)
+    app.include_router(ws_router)
 
     # 异常处理器：把 AgentError 转成统一格式的 JSON
     @app.exception_handler(AgentError)
