@@ -7,9 +7,14 @@ import tempfile
 import shutil
 
 from src.agent.loop import Agent
-from src.agent.providers import TreeMessageProvider, EphemeralMessageProvider
+from src.agent.providers import (
+    TreeMessageProvider,
+    EphemeralMessageProvider,
+    entries_to_messages,
+)
 from src.storage.session_storage import SessionStorage
 from src.storage.lane_manager import LaneManager
+from src.storage.models import Entry, ToolUseBlock, ToolResultBlock
 from src.tools.registry import ToolRegistry
 from src.permission.manager import PermissionManager
 from src.llm.client import LLMClient
@@ -24,6 +29,7 @@ class MockLLMClient:
         self.responses = responses or []
         self.call_count = 0
         self.model = "mock-model"
+        self.provider_name = "mock"
 
     async def chat(self, messages, tools=None, **kwargs):
         """返回预设的响应。"""
@@ -162,6 +168,89 @@ class TestEndToEndScenarios:
         assert result.status == "completed"
         assert result.iterations == 3
         assert result.total_tokens > 0
+
+
+class TestContextRepair:
+    def test_drops_truncated_tool_call_turn(self):
+        entries = [
+            Entry(
+                id="user-1",
+                parent=None,
+                lane="main",
+                seq=1,
+                role="user",
+                content="请读取文件",
+                timestamp=1.0,
+            ),
+            Entry(
+                id="assistant-1",
+                parent="user-1",
+                lane="main",
+                seq=2,
+                role="assistant",
+                content=[
+                    ToolUseBlock(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "demo.txt"},
+                    )
+                ],
+                timestamp=2.0,
+            ),
+        ]
+
+        messages = entries_to_messages(entries)
+
+        assert [message.role for message in messages] == ["user"]
+
+    def test_keeps_complete_tool_turn(self):
+        entries = [
+            Entry(
+                id="user-1",
+                parent=None,
+                lane="main",
+                seq=1,
+                role="user",
+                content="请读取文件",
+                timestamp=1.0,
+            ),
+            Entry(
+                id="assistant-1",
+                parent="user-1",
+                lane="main",
+                seq=2,
+                role="assistant",
+                content=[
+                    ToolUseBlock(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "demo.txt"},
+                    )
+                ],
+                timestamp=2.0,
+            ),
+            Entry(
+                id="tool-1",
+                parent="assistant-1",
+                lane="main",
+                seq=3,
+                role="tool",
+                content=[
+                    ToolResultBlock(
+                        tool_call_id="call_1",
+                        content="hello world",
+                    )
+                ],
+                timestamp=3.0,
+            ),
+        ]
+
+        messages = entries_to_messages(entries)
+
+        assert [message.role for message in messages] == ["user", "assistant", "tool"]
+        assert messages[1].tool_calls is not None
+        assert messages[1].tool_calls[0].id == "call_1"
+        assert messages[2].tool_call_id == "call_1"
 
     @pytest.mark.asyncio
     async def test_lane_branching_scenario(self, temp_workspace, temp_data_dir):

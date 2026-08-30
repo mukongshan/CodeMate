@@ -105,7 +105,70 @@ def entries_to_messages(entries: list[Entry]) -> list[Message]:
             messages.extend(expand_tool_entry(entry))
         else:
             messages.append(entry_to_message(entry))
-    return messages
+    return repair_message_sequence(messages)
+
+
+def repair_message_sequence(messages: list[Message]) -> list[Message]:
+    """修复被上下文裁剪切断的 OpenAI 消息序列。
+
+    规则很简单：
+    - 允许普通 system/user/assistant 消息直接通过。
+    - assistant 带 tool_calls 时，后面必须紧跟同数量、同顺序的 tool 消息。
+    - 只要发现最后一轮 tool 链不完整，就把这一轮整体丢掉。
+    """
+    repaired: list[Message] = []
+    pending_tool_ids: list[str] = []
+    assistant_start: int | None = None
+
+    def drop_pending_group() -> None:
+        nonlocal repaired, pending_tool_ids, assistant_start
+        if assistant_start is not None:
+            repaired = repaired[:assistant_start]
+        pending_tool_ids = []
+        assistant_start = None
+
+    idx = 0
+    while idx < len(messages):
+        message = messages[idx]
+
+        if pending_tool_ids:
+            if message.role != "tool":
+                drop_pending_group()
+                continue
+            if message.tool_call_id != pending_tool_ids[0]:
+                drop_pending_group()
+                continue
+
+            repaired.append(message)
+            pending_tool_ids.pop(0)
+            if not pending_tool_ids:
+                assistant_start = None
+            idx += 1
+            continue
+
+        if message.role == "assistant" and message.tool_calls:
+            tool_call_ids = [tc.id for tc in message.tool_calls if tc.id]
+            if len(tool_call_ids) != len(message.tool_calls):
+                idx += 1
+                continue
+
+            repaired.append(message)
+            pending_tool_ids = tool_call_ids
+            assistant_start = len(repaired) - 1
+            idx += 1
+            continue
+
+        if message.role == "tool":
+            idx += 1
+            continue
+
+        repaired.append(message)
+        idx += 1
+
+    if pending_tool_ids and assistant_start is not None:
+        repaired = repaired[:assistant_start]
+
+    return repaired
 
 
 def message_to_entry_content(message: Message):

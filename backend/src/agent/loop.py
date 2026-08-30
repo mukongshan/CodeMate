@@ -221,7 +221,7 @@ class Agent:
 
             # 记录 LLM 请求
             await self._emit("llm_request", {
-                "provider": getattr(self.llm_client.provider, "name", "unknown"),
+                "provider": self.llm_client.provider_name,
                 "model": self.llm_client.model,
                 "input_tokens": sum(len(m.content or "") // 4 for m in messages)
             })

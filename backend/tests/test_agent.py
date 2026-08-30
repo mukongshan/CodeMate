@@ -8,6 +8,7 @@ from src.agent.loop import Agent
 from src.agent.providers import EphemeralMessageProvider
 from src.llm.events import Message, TextDeltaEvent, DoneEvent, ToolCallEvent
 from src.llm.client import LLMClient
+from src.tools.base import ToolResult
 from src.tools.registry import ToolRegistry
 from src.permission.manager import PermissionManager
 
@@ -24,9 +25,15 @@ class TestAgentLoop:
 
     @pytest.fixture
     def mock_registry(self):
-        """模拟工具注册表。"""
+        """模拟工具注册表。
+
+        execute 必须返回真实的 ToolResult：它的 content 会作为 tool 消息回灌
+        进上下文，如果留成默认的 MagicMock，下一轮 _build_messages 就会拿到
+        非字符串的 content。
+        """
         registry = MagicMock(spec=ToolRegistry)
         registry.get_tool_schemas.return_value = []
+        registry.execute = AsyncMock(return_value=ToolResult.ok("mock tool output"))
         return registry
 
     @pytest.fixture
