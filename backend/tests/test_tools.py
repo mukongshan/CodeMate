@@ -175,6 +175,20 @@ class TestBashTool:
 
         assert not result.is_error
         assert "hello" in result.content.lower()
+        assert "[stderr]" not in result.content
+
+    @pytest.mark.asyncio
+    async def test_missing_workspace_is_created(self, temp_dir):
+        """测试缺失的 workspace 会先创建，再进入 WSL 执行。"""
+        workspace = temp_dir / "missing-workspace"
+
+        tool = BashTool(workspace)
+        result = await tool.execute(command="pwd")
+
+        assert workspace.exists()
+        assert not result.is_error
+        assert "missing-workspace" in result.content
+        assert "[stderr]" not in result.content
 
     @pytest.mark.asyncio
     async def test_list_directory(self, temp_dir):
@@ -183,10 +197,7 @@ class TestBashTool:
         (temp_dir / "test.txt").write_text("test", encoding="utf-8")
 
         tool = BashTool(temp_dir)
-        # Windows 使用 dir，Unix 使用 ls
-        import platform
-        cmd = "dir" if platform.system() == "Windows" else "ls"
-        result = await tool.execute(command=cmd)
+        result = await tool.execute(command="ls")
 
         assert not result.is_error
         assert "test.txt" in result.content
@@ -195,17 +206,22 @@ class TestBashTool:
     async def test_command_timeout(self, temp_dir):
         """测试命令超时。"""
         tool = BashTool(temp_dir)
-        # 使用短超时执行长命令
-        import platform
-        if platform.system() == "Windows":
-            cmd = "timeout /t 10"
-        else:
-            cmd = "sleep 10"
-
-        result = await tool.execute(command=cmd, timeout=1)
+        result = await tool.execute(command="sleep 10", timeout=1)
 
         assert result.is_error
-        assert "超时" in result.content or "timeout" in result.content.lower()
+        assert result.metadata["timed_out"] is True
+
+    @pytest.mark.asyncio
+    async def test_shell_syntax_runs_in_wsl(self, temp_dir):
+        """测试 WSL bash 支持 shell 语法。"""
+        tool = BashTool(temp_dir)
+        result = await tool.execute(
+            command="printf 'hello\\nworld\\n' | grep world > marker.txt && cat marker.txt"
+        )
+
+        assert not result.is_error
+        assert "world" in result.content
+        assert (temp_dir / "marker.txt").read_text(encoding="utf-8").strip() == "world"
 
     @pytest.mark.asyncio
     async def test_command_failure(self, temp_dir):
@@ -214,6 +230,15 @@ class TestBashTool:
         result = await tool.execute(command="nonexistent_command_12345")
 
         assert result.is_error
+
+    @pytest.mark.asyncio
+    async def test_command_stderr_is_preserved(self, temp_dir):
+        """测试真实命令 stderr 不会被 WSL 启动提示过滤吞掉。"""
+        tool = BashTool(temp_dir)
+        result = await tool.execute(command="echo real-error >&2; false")
+
+        assert result.is_error
+        assert "real-error" in result.content
 
 
 if __name__ == "__main__":
