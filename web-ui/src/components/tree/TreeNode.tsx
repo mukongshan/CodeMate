@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position } from 'reactflow';
 import { User, Bot, Wrench, UserSearch, GitBranch } from 'lucide-react';
-import { Entry } from '../../types';
+import type { Entry } from '../../types';
 
 interface TreeNodeProps {
   data: {
@@ -13,6 +13,7 @@ interface TreeNodeProps {
 
 export default memo(function TreeNode({ data }: TreeNodeProps) {
   const { entry, isHighlighted, laneColor } = data;
+  const toolNames = Array.isArray(entry.tool_names) ? entry.tool_names : [];
 
   const getRoleIcon = () => {
     switch (entry.role) {
@@ -21,7 +22,7 @@ export default memo(function TreeNode({ data }: TreeNodeProps) {
       case 'assistant':
         return <Bot className="w-4 h-4" />;
       case 'tool':
-        if (entry.tool_names.includes('delegate_task')) {
+        if (toolNames.includes('delegate_task')) {
           return <UserSearch className="w-4 h-4" />;
         }
         return <Wrench className="w-4 h-4" />;
@@ -80,9 +81,9 @@ export default memo(function TreeNode({ data }: TreeNodeProps) {
         </div>
 
         {/* 工具名 */}
-        {entry.tool_names.length > 0 && (
+        {toolNames.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
-            {entry.tool_names.slice(0, 1).map((name) => (
+            {toolNames.slice(0, 1).map((name) => (
               <span
                 key={name}
                 className="text-xs px-2 py-0.5 bg-surface-3 rounded font-mono"
@@ -90,9 +91,9 @@ export default memo(function TreeNode({ data }: TreeNodeProps) {
                 {name}
               </span>
             ))}
-            {entry.tool_names.length > 1 && (
+            {toolNames.length > 1 && (
               <span className="text-xs px-2 py-0.5 bg-surface-3 rounded">
-                +{entry.tool_names.length - 1}
+                +{toolNames.length - 1}
               </span>
             )}
           </div>

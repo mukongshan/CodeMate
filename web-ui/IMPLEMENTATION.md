@@ -165,7 +165,7 @@ src/
 
 ### 配置文件（5个）
 ```
-frontend/
+web-ui/
 ├── package.json                         # 依赖管理
 ├── tsconfig.json                        # TypeScript配置
 ├── vite.config.ts                       # Vite配置
@@ -191,7 +191,7 @@ frontend/
 
 1. **安装依赖并启动**
    ```bash
-   cd frontend
+   cd web-ui
    npm install
    npm run dev
    ```

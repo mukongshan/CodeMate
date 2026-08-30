@@ -11,7 +11,7 @@ export default function Toolbar() {
 
   const switchLane = async (lane: string) => {
     try {
-      await fetch(`http://localhost:8000/api/sessions/${useStore.getState().sessionId}/lanes/${lane}/switch`, {
+      await fetch(`/api/sessions/${useStore.getState().sessionId}/lanes/${lane}/switch`, {
         method: 'POST',
       });
       useStore.getState().setCurrentLane(lane);

@@ -46,7 +46,7 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
       const currentLanePointer = lanes.find(l => l.lane === currentLane);
       const fromId = currentLanePointer?.leaf_id;
 
-      const res = await fetch(`http://localhost:8000/api/sessions/${sessionId}/lanes`, {
+      const res = await fetch(`/api/sessions/${sessionId}/lanes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

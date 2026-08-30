@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect } from 'react';
 import ReactFlow, {
-  Node,
-  Edge,
+  BackgroundVariant,
+  type Node,
+  type Edge,
   Background,
   Controls,
   MiniMap,
@@ -11,7 +12,6 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
 import { useStore } from '../../store';
-import { Entry } from '../../types';
 import TreeNode from './TreeNode';
 
 const nodeTypes = {
@@ -110,7 +110,7 @@ export default function TreeCanvas() {
         minZoom={0.1}
         maxZoom={2}
       >
-        <Background color="#e1e0d9" gap={16} size={1} variant="dots" />
+        <Background color="#e1e0d9" gap={16} size={1} variant={BackgroundVariant.Dots} />
         <Controls />
         <MiniMap
           nodeColor={(node) => {

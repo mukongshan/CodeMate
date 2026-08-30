@@ -45,7 +45,7 @@ npm run build
 ## 项目结构
 
 ```
-frontend/
+web-ui/
 ├── src/
 │   ├── components/         # React 组件
 │   │   ├── tree/          # 树形画布组件

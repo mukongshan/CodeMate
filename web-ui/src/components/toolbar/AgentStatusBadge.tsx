@@ -1,4 +1,4 @@
-import { AgentState } from '../../types';
+import type { AgentState } from '../../types';
 import { Loader2, Circle, Pause, CheckCircle, XCircle } from 'lucide-react';
 
 interface AgentStatusBadgeProps {

@@ -12,6 +12,7 @@ export default function SessionPicker() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     loadSessions();
@@ -19,11 +20,15 @@ export default function SessionPicker() {
 
   const loadSessions = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/sessions');
+      const res = await fetch('/api/sessions');
+      if (!res.ok) {
+        throw new Error(`Failed to load sessions: HTTP ${res.status}`);
+      }
       const data = await res.json();
       setSessions(data.sessions || []);
     } catch (error) {
       console.error('Failed to load sessions:', error);
+      setError(error instanceof Error ? error.message : 'Failed to load sessions');
     } finally {
       setLoading(false);
     }
@@ -31,16 +36,24 @@ export default function SessionPicker() {
 
   const createSession = async () => {
     setCreating(true);
+    setError('');
     try {
-      const res = await fetch('http://localhost:8000/api/sessions', {
+      const res = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || `Failed to create session: HTTP ${res.status}`);
+      }
+      if (!data.session_id) {
+        throw new Error('Failed to create session: missing session_id');
+      }
       await loadSessionData(data.session_id);
     } catch (error) {
       console.error('Failed to create session:', error);
+      setError(error instanceof Error ? error.message : 'Failed to create session');
     } finally {
       setCreating(false);
     }
@@ -48,11 +61,15 @@ export default function SessionPicker() {
 
   const loadSessionData = async (sessionId: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${sessionId}`);
+      const res = await fetch(`/api/sessions/${sessionId}`);
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || `Failed to load session: HTTP ${res.status}`);
+      }
       setSession(sessionId, data);
     } catch (error) {
       console.error('Failed to load session data:', error);
+      setError(error instanceof Error ? error.message : 'Failed to load session data');
     }
   };
 
@@ -73,6 +90,12 @@ export default function SessionPicker() {
         </div>
 
         <div className="space-y-3 mb-6">
+          {error && (
+            <div className="p-3 bg-red-50 border border-status-error rounded-md text-sm text-status-error">
+              {error}
+            </div>
+          )}
+
           {sessions.length === 0 ? (
             <div className="text-center py-12 text-text-muted">
               暂无会话，点击下方创建新会话

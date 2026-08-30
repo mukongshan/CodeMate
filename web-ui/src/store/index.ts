@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import {
+import type {
   Entry,
   LanePointer,
   AgentState,
@@ -69,7 +69,7 @@ interface AppState {
   removeToast: (id: string) => void;
 }
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
   currentLane: 'main',

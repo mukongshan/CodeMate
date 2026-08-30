@@ -1,5 +1,5 @@
 {
-  "name": "frontend",
+  "name": "web-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
     "typescript": "~6.0.2",
     "vite": "^8.2.2"
   },

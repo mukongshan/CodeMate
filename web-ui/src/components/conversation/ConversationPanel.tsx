@@ -9,7 +9,7 @@ interface ConversationPanelProps {
 }
 
 export default function ConversationPanel({ sendMessage }: ConversationPanelProps) {
-  const { messages, currentLane, isRunning, toolCalls, subagents } = useStore();
+  const { messages, currentLane, isRunning, toolCalls } = useStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

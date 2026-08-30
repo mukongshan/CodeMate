@@ -1,14 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { WSEnvelope } from '../types';
-
-const WS_URL = 'ws://localhost:8000/ws';
+import type { WSEnvelope } from '../types';
 
 export function useWebSocket(sessionId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number>();
+  const reconnectTimerRef = useRef<number | undefined>(undefined);
 
   const {
+    setSession,
     setWsConnected,
     setWsReconnecting,
     setAgentState,
@@ -25,33 +24,55 @@ export function useWebSocket(sessionId: string | null) {
   useEffect(() => {
     if (!sessionId) return;
 
+    const syncSessionSnapshot = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setSession(sessionId, data);
+      } catch (error) {
+        console.warn('Failed to sync session snapshot:', error);
+      }
+    };
+
     const connect = () => {
-      const ws = new WebSocket(`${WS_URL}/${sessionId}`);
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${sessionId}`);
+      const currentWs = ws;
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        if (wsRef.current !== currentWs) return;
         setWsConnected(true);
         setWsReconnecting(false);
-        addToast({ type: 'success', message: '连接已建立' });
+        if (reconnectTimerRef.current !== undefined) {
+          clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = undefined;
+        }
+        addToast({ type: 'success', message: 'Connected' });
+        void syncSessionSnapshot();
       };
 
       ws.onmessage = (event) => {
+        if (wsRef.current !== currentWs) return;
         const envelope: WSEnvelope = JSON.parse(event.data);
         handleEvent(envelope);
       };
 
       ws.onerror = (error) => {
+        if (wsRef.current !== currentWs) return;
         console.error('WebSocket error:', error);
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
+        if (wsRef.current !== currentWs) return;
         setWsConnected(false);
         setWsReconnecting(true);
-        addToast({ type: 'warning', message: '连接已断开，正在重连...' });
+        addToast({ type: 'warning', message: 'Connection lost, reconnecting...' });
 
-        // 自动重连
+        if (reconnectTimerRef.current !== undefined) {
+          clearTimeout(reconnectTimerRef.current);
+        }
         reconnectTimerRef.current = window.setTimeout(() => {
           connect();
         }, 3000);
@@ -61,31 +82,30 @@ export function useWebSocket(sessionId: string | null) {
     connect();
 
     return () => {
-      if (reconnectTimerRef.current) {
+      if (reconnectTimerRef.current !== undefined) {
         clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = undefined;
       }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
-  }, [sessionId]);
+  }, [sessionId, setSession, setWsConnected, setWsReconnecting, addToast]);
 
   const handleEvent = (envelope: WSEnvelope) => {
     const { type, data } = envelope;
 
     switch (type) {
       case 'node_added':
-        // 树上新增节点
         addEntry(data as any);
         break;
 
       case 'text_delta':
-        // 流式追加文字
         appendMessageText(data.message_id, data.text);
         break;
 
       case 'message_start':
-        // 开始新消息
         addMessage({
           message_id: data.message_id,
           role: 'assistant',
@@ -96,12 +116,10 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'message_end':
-        // 消息结束
         updateMessage(data.message_id, { is_streaming: false });
         break;
 
       case 'tool_call_start':
-        // 工具开始执行
         updateToolCall(data.call_id, {
           call_id: data.call_id,
           tool_name: data.tool_name,
@@ -111,7 +129,6 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'tool_call_end':
-        // 工具执行完成
         updateToolCall(data.call_id, {
           call_id: data.call_id,
           status: data.status,
@@ -120,7 +137,6 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'subagent_started':
-        // 子 Agent 开始
         updateSubagent(data.subagent_id, {
           subagent_id: data.subagent_id,
           task: data.task,
@@ -131,7 +147,6 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'subagent_progress':
-        // 子 Agent 进度更新
         updateSubagent(data.subagent_id, {
           step: data.step,
           tool_name: data.tool_name,
@@ -139,7 +154,6 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'subagent_done':
-        // 子 Agent 完成
         updateSubagent(data.subagent_id, {
           status: data.status,
           content: data.content,
@@ -148,12 +162,17 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'status_update':
-        // Agent 状态更新
         setAgentState(data.state);
         break;
 
+      case 'run_started':
+        setAgentState('preparing');
+        break;
+
+      case 'llm_response':
+        break;
+
       case 'permission_request':
-        // 权限请求
         setPermissionRequest({
           request_id: data.request_id,
           tool_name: data.tool_name,
@@ -164,15 +183,15 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'lane_created':
-        addToast({ type: 'success', message: `已创建分支 ${data.lane}` });
+        addToast({ type: 'success', message: `Created lane ${data.lane}` });
         break;
 
       case 'lane_switched':
-        addToast({ type: 'info', message: `切换到 ${data.lane}` });
+        addToast({ type: 'info', message: `Switched to ${data.lane}` });
         break;
 
       case 'run_error':
-        addToast({ type: 'error', message: data.error || '运行出错' });
+        addToast({ type: 'error', message: data.message || 'Run failed' });
         break;
 
       case 'error':
@@ -186,7 +205,7 @@ export function useWebSocket(sessionId: string | null) {
 
   const sendMessage = (content: string, lane?: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      addToast({ type: 'error', message: '连接未建立' });
+      addToast({ type: 'error', message: 'Connection is not ready' });
       return;
     }
 

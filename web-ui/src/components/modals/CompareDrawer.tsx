@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
-import { X, ChevronDown } from 'lucide-react';
+import { X } from 'lucide-react';
 
 export default function CompareDrawer() {
   const { sessionId, lanes, currentLane, setShowCompareDrawer } = useStore();
@@ -27,7 +27,7 @@ export default function CompareDrawer() {
     setLoading(true);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/sessions/${sessionId}/lanes/compare?a=${laneA}&b=${laneB}`
+        `/api/sessions/${sessionId}/lanes/compare?a=${laneA}&b=${laneB}`
       );
       const data = await res.json();
       setCompareData(data);
