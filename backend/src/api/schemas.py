@@ -107,6 +107,10 @@ class CreateLaneIn(BaseModel):
     description: Optional[str] = None
 
 
+class UpdatePermissionGateIn(BaseModel):
+    command_allowlist: list[str] = Field(default_factory=list)
+
+
 # --- REST 错误响应 ----------------------------------------------------------
 
 

@@ -48,6 +48,7 @@ describe('ConversationPanel', () => {
 
     expect(sendMessage).toHaveBeenCalledWith('new message', 'feature-x');
     expect(screen.getByText('hello')).toBeInTheDocument();
+    expect(screen.getByText('new message')).toBeInTheDocument();
     expect(screen.getByText('streaming reply')).toBeInTheDocument();
   });
 });

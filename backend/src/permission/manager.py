@@ -19,7 +19,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from .rules import is_dangerous_command, is_safe_path, is_system_path
+from .rules import (
+    inspect_command_safety,
+    is_command_allowlisted,
+    is_safe_path,
+    is_system_path,
+    normalize_command_allowlist,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +86,9 @@ class PermissionManager:
     def __init__(self, workspace: str | Path, config: Optional[dict] = None) -> None:
         self.workspace = str(Path(workspace).expanduser().resolve())
         self.config = config or {}
+        self.command_allowlist = normalize_command_allowlist(
+            self.config.get("command_allowlist", ())
+        )
         self.auto_approved: set[str] = set()
         self.denied: set[str] = set()
         # 由 WebSocket 层注入。未注入时所有需要确认的操作一律拒绝。
@@ -154,19 +163,33 @@ class PermissionManager:
         """DANGEROUS 级：黑名单硬拒绝，其余一律需要用户确认。"""
         command = args.get("command") or ""
 
-        dangerous, label = is_dangerous_command(command)
-        if dangerous:
+        safe, safety_reason = inspect_command_safety(command, self.workspace)
+        if safe and is_command_allowlisted(command, self.command_allowlist):
             return PermissionDecision(
-                allowed=False, reason=f"检测到危险命令（{label}），已拒绝执行"
+                allowed=True,
+                reason="命令在白名单内且通过安全检查",
+                auto_approved=True,
             )
+
+        warning = "此操作将执行 shell 命令"
+        if not safe:
+            warning = f"命令存在风险，需要用户确认：{safety_reason}"
 
         return await self._ask_user(
             tool_name=tool_name,
             args=args,
             risk_level="high",
-            warning="此操作将执行 shell 命令",
+            warning=warning,
             fingerprint=fingerprint,
         )
+
+    def get_command_allowlist(self) -> list[str]:
+        return list(self.command_allowlist)
+
+    def set_command_allowlist(self, commands: list[str]) -> list[str]:
+        self.command_allowlist = normalize_command_allowlist(commands)
+        self.config["command_allowlist"] = list(self.command_allowlist)
+        return self.get_command_allowlist()
 
     async def _ask_user(
         self,

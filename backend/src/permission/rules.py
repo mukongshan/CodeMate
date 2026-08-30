@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
+from typing import Iterable
 
 
 def resolve_in_workspace(path: str, workspace: str | Path) -> Path:
@@ -126,3 +128,198 @@ def is_dangerous_command(command: str) -> tuple[bool, str]:
         if pattern.search(command):
             return True, label
     return False, ""
+
+
+def normalize_command_allowlist(commands: Iterable[str] | None) -> tuple[str, ...]:
+    """Normalize configured command names/prefixes while preserving their order."""
+    if not commands:
+        return ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        normalized = " ".join(str(command).strip().split()).lower()
+        if normalized and normalized not in seen:
+            result.append(normalized)
+            seen.add(normalized)
+    return tuple(result)
+
+
+def _shell_tokens(command: str) -> list[str] | None:
+    try:
+        # Commands execute in WSL, but LLMs may emit Windows host paths.
+        lexer = shlex.shlex(
+            command, posix=os.name != "nt", punctuation_chars=";&|><()"
+        )
+        lexer.whitespace_split = True
+        return [_clean_shell_token(token) for token in lexer]
+    except ValueError:
+        return None
+
+
+def _clean_shell_token(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        return token[1:-1]
+    return token
+
+
+def _command_segments(tokens: list[str]) -> list[list[str]]:
+    separators = {";", "&&", "||", "|", "&", "(", ")"}
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in separators:
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _segment_command_name(segment: list[str]) -> str:
+    for token in segment:
+        if token in {">", ">>", ">|", "<", "<<", "&>", "&>>"}:
+            continue
+        if token.startswith("-"):
+            continue
+        if "=" in token and token.split("=", 1)[0].replace("_", "").isalnum():
+            continue
+        return Path(token).name.lower()
+    return ""
+
+
+def _allowlist_matches(segment: list[str], allowlist: tuple[str, ...]) -> bool:
+    command_name = _segment_command_name(segment)
+    if not command_name:
+        return False
+
+    command_tokens = [
+        token.lower()
+        for token in segment
+        if token not in {">", ">>", ">|", "<", "<<", "&>", "&>>"}
+    ]
+    for entry in allowlist:
+        entry_tokens = entry.split()
+        if len(entry_tokens) == 1 and entry_tokens[0] == command_name:
+            return True
+        if command_tokens[: len(entry_tokens)] == entry_tokens:
+            return True
+    return False
+
+
+def is_command_allowlisted(
+    command: str, allowlist: Iterable[str] | None
+) -> bool:
+    """Return whether every simple command in a shell expression is allowlisted."""
+    tokens = _shell_tokens(command)
+    if tokens is None or not tokens:
+        return False
+    if "$(" in command or "`" in command:
+        return False
+    normalized = normalize_command_allowlist(allowlist)
+    segments = _command_segments(tokens)
+    return bool(segments) and all(
+        _allowlist_matches(segment, normalized) for segment in segments
+    )
+
+
+def _command_path(path: str, workspace: str | Path) -> str:
+    """Convert a WSL /mnt path to a host path before applying workspace checks."""
+    normalized = path.replace("\\", "/")
+    match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", normalized)
+    if match and os.name == "nt":
+        tail = match.group(2) or ""
+        return f"{match.group(1).upper()}:/{tail}"
+    return path
+
+
+def _path_is_inside_workspace(path: str, workspace: str | Path) -> bool:
+    return is_safe_path(_command_path(path, workspace), workspace)
+
+
+def _write_paths_from_segment(segment: list[str]) -> list[str]:
+    """Extract paths for common shell writes; unknown programs remain conservative."""
+    if not segment:
+        return []
+
+    paths: list[str] = []
+    redirections = {">", ">>", ">|", "&>", "&>>"}
+    for index, token in enumerate(segment[:-1]):
+        if token in redirections:
+            paths.append(segment[index + 1])
+
+    command_name = _segment_command_name(segment)
+    write_commands = {
+        "chmod",
+        "chown",
+        "cp",
+        "install",
+        "ln",
+        "mkdir",
+        "mktemp",
+        "mv",
+        "rm",
+        "rmdir",
+        "tee",
+        "touch",
+        "truncate",
+    }
+    if command_name in write_commands:
+        options = {"--", "-f", "-p", "-r", "-R", "-i", "-v", "-n", "-s"}
+        paths.extend(
+            token
+            for token in segment[1:]
+            if token not in options and not token.startswith("-")
+        )
+    elif command_name == "git" and len(segment) > 1 and segment[1].lower() in {
+        "clone",
+        "worktree",
+    }:
+        paths.extend(
+            token
+            for token in segment[2:]
+            if token != "--" and not token.startswith("-")
+        )
+        if (
+            command_name == "git"
+            and segment[1].lower() == "clone"
+            and len(paths) > 1
+        ):
+            paths = paths[-1:]
+    return paths
+
+
+def inspect_command_safety(
+    command: str, workspace: str | Path
+) -> tuple[bool, str]:
+    """Check dangerous patterns and statically visible writes outside workspace."""
+    dangerous, label = is_dangerous_command(command)
+    if dangerous:
+        return False, f"检测到危险命令（{label}）"
+
+    tokens = _shell_tokens(command)
+    if tokens is None or not tokens:
+        return False, "命令语法无法安全解析"
+    if "$(" in command or "`" in command:
+        return False, "命令包含无法静态检查的命令替换"
+
+    for segment in _command_segments(tokens):
+        command_name = _segment_command_name(segment)
+        if command_name == "cd":
+            cd_index = next(
+                (index for index, token in enumerate(segment) if token == "cd"), None
+            )
+            if cd_index is not None and cd_index + 1 < len(segment):
+                target = segment[cd_index + 1]
+                if not _path_is_inside_workspace(target, workspace):
+                    return False, f"命令将工作目录切换到 workspace 外：{target}"
+
+        for path in _write_paths_from_segment(segment):
+            if is_system_path(_command_path(path, workspace)):
+                return False, f"命令尝试写入系统关键路径：{path}"
+            if not _path_is_inside_workspace(path, workspace):
+                return False, f"命令尝试写入 workspace 外的路径：{path}"
+
+    return True, ""

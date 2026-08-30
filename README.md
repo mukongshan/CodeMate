@@ -103,10 +103,11 @@ npm run dev
 - `glob` - 文件搜索
 - `grep` - 内容搜索
 
-### 4. 三级权限控制
+### 4. 三级权限控制与工具门禁
 - **SAFE**（自动放行）：只读操作
 - **WRITE**（workspace 内自动放行）：工作目录内的写操作
 - **DANGEROUS**（需用户确认）：危险操作或 workspace 外的修改
+- 命令工具支持 session 级白名单；白名单命令仍会先经过危险模式、命令替换和 workspace 路径安全检查
 
 ### 5. 子 Agent 系统
 将子任务委托给独立上下文的只读 Agent：
@@ -148,6 +149,8 @@ npm run dev
 - `POST /api/sessions/{id}/lanes/{lane}/switch` - 切换分支
 - `DELETE /api/sessions/{id}/lanes/{lane}` - 删除分支
 - `GET /api/sessions/{id}/lanes/compare` - 对比分支
+- `GET /api/sessions/{id}/permissions/gate` - 查看命令工具门禁
+- `PUT /api/sessions/{id}/permissions/gate` - 更新命令白名单
 
 ### WebSocket
 - `ws://localhost:8000/ws/{session_id}` - 实时事件推送
@@ -214,6 +217,7 @@ LOG_DIR=./logs
 MAX_ITERATIONS=15
 MAX_CONTEXT_TOKENS=8000
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+COMMAND_ALLOWLIST=pwd,ls,cat,head,tail,grep,find,git status,git diff
 
 # 服务器配置
 HOST=0.0.0.0

@@ -20,6 +20,18 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "deepseek": ("https://api.deepseek.com", "deepseek-chat"),
 }
 
+DEFAULT_COMMAND_ALLOWLIST = [
+    "pwd",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "find",
+    "git status",
+    "git diff",
+]
+
 
 @dataclass
 class LLMConfig:
@@ -64,6 +76,9 @@ class AppConfig:
     workspace: Path = field(default_factory=Path.cwd)
     data_dir: Path = Path("data/sessions")
     log_dir: Path = Path("logs")
+    command_allowlist: list[str] = field(
+        default_factory=lambda: list(DEFAULT_COMMAND_ALLOWLIST)
+    )
     cors_origins: list[str] = field(default_factory=list)
     max_iterations: int = 20
     max_context_tokens: int = 8000
@@ -92,6 +107,10 @@ class AppConfig:
             workspace=workspace,
             data_dir=Path(os.getenv("DATA_DIR", "data/sessions")),
             log_dir=Path(os.getenv("LOG_DIR", "logs")),
+            command_allowlist=_list_env(
+                "COMMAND_ALLOWLIST",
+                list(DEFAULT_COMMAND_ALLOWLIST),
+            ),
             cors_origins=_list_env(
                 "CORS_ORIGINS",
                 [

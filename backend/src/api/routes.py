@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -19,7 +18,7 @@ from ..errors.types import (
     LaneNotFoundError,
     SessionNotFoundError,
 )
-from .schemas import CreateLaneIn, CreateSessionIn
+from .schemas import CreateLaneIn, CreateSessionIn, UpdatePermissionGateIn
 from .session_service import SessionManager, SessionRuntime
 
 router = APIRouter(prefix="/api")
@@ -80,59 +79,56 @@ def delete_session(session_id: str, manager: SessionManager = Depends(get_manage
 # --- Filesystem ------------------------------------------------------------
 
 
-@router.get("/filesystem/roots")
-def list_filesystem_roots() -> dict:
-    roots: list[dict[str, str]] = []
-
-    if os.name == "nt":
-        for code in range(ord("A"), ord("Z") + 1):
-            root = Path(f"{chr(code)}:/")
-            if root.exists():
-                roots.append({"name": f"{chr(code)}:", "path": str(root)})
-    else:
-        roots.append({"name": "/", "path": "/"})
-
-    home = Path.home()
-    if home.exists():
-        home_path = str(home)
-        if all(item["path"] != home_path for item in roots):
-            roots.insert(0, {"name": "Home", "path": home_path})
-
-    return {"roots": roots}
+@router.post("/filesystem/pick-directory")
+def pick_directory(initial_path: str | None = Query(default=None)) -> dict:
+    selected = _pick_directory_with_windows_dialog(initial_path)
+    return {"path": str(selected) if selected else None}
 
 
-@router.get("/filesystem/children")
-def list_directory_children(path: str = Query(...)) -> dict:
-    if not path.strip():
-        raise HTTPException(status_code=400, detail="path is required")
-
-    directory = Path(path).expanduser()
+def _pick_directory_with_windows_dialog(initial_path: str | None = None) -> Path | None:
     try:
-        resolved = directory.resolve(strict=True)
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Python tkinter is required to open the native directory picker",
+        ) from exc
 
-    if not resolved.is_dir():
-        raise HTTPException(status_code=400, detail="path is not a directory")
-
-    children: list[dict[str, str]] = []
+    initial_dir = _dialog_initial_dir(initial_path)
+    root = tk.Tk()
+    root.withdraw()
     try:
-        candidates = sorted(resolved.iterdir(), key=lambda item: item.name.lower())
-        for child in candidates:
-            try:
-                if child.is_dir():
-                    children.append({"name": child.name, "path": str(child)})
-            except OSError:
-                continue
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        root.attributes("-topmost", True)
+    except tk.TclError:
+        pass
 
-    parent = resolved.parent if resolved.parent != resolved else None
-    return {
-        "path": str(resolved),
-        "parent": str(parent) if parent else None,
-        "children": children[:300],
-    }
+    try:
+        selected = filedialog.askdirectory(
+            parent=root,
+            title="选择工作区目录",
+            initialdir=str(initial_dir),
+            mustexist=True,
+        )
+    except tk.TclError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to open native directory picker: {exc}",
+        ) from exc
+    finally:
+        root.destroy()
+
+    if not selected:
+        return None
+    return Path(selected).resolve()
+
+
+def _dialog_initial_dir(initial_path: str | None) -> Path:
+    if initial_path:
+        candidate = Path(initial_path).expanduser()
+        if candidate.exists():
+            return candidate if candidate.is_dir() else candidate.parent
+    return Path.home()
 
 
 # --- Lane ------------------------------------------------------------------
@@ -212,3 +208,28 @@ def permission_audit(
 ) -> dict:
     runtime = _require_session(manager, session_id)
     return runtime.permission_manager.audit_report()
+
+
+@router.get("/sessions/{session_id}/permissions/gate")
+def permission_gate(
+    session_id: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return {
+        "command_allowlist": runtime.permission_manager.get_command_allowlist()
+    }
+
+
+@router.put("/sessions/{session_id}/permissions/gate")
+def update_permission_gate(
+    session_id: str,
+    body: UpdatePermissionGateIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    runtime = manager.update_command_allowlist(
+        session_id, body.command_allowlist
+    )
+    return {
+        "command_allowlist": runtime.permission_manager.get_command_allowlist()
+    }

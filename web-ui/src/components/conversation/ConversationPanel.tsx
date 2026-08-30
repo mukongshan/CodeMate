@@ -10,7 +10,7 @@ interface ConversationPanelProps {
 }
 
 export default function ConversationPanel({ sendMessage }: ConversationPanelProps) {
-  const { entries, lanes, messages, currentLane, isRunning, toolCalls } = useStore();
+  const { entries, lanes, messages, currentLane, isRunning, toolCalls, addMessage } = useStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -40,9 +40,16 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isRunning) return;
+    const content = input.trim();
+    if (!content || isRunning) return;
 
-    sendMessage(input.trim(), currentLane);
+    addMessage({
+      message_id: `local-user-${Date.now()}`,
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+    });
+    sendMessage(content, currentLane);
     setInput('');
   };
 

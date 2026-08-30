@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from main import create_app
 from src.config import AppConfig
+from src.api import routes as api_routes
 from src.api.ws import _handle_message
 
 
@@ -155,25 +156,21 @@ class TestSessionAPI:
 class TestFilesystemAPI:
     """测试本地目录选择 API。"""
 
-    def test_list_roots(self, client):
-        response = client.get("/api/filesystem/roots")
-        assert response.status_code == 200
-        data = response.json()
-        assert "roots" in data
-        assert isinstance(data["roots"], list)
-        assert data["roots"]
+    def test_pick_directory(self, client, temp_dir, monkeypatch):
+        selected = temp_dir / "selected"
+        selected.mkdir()
+        monkeypatch.setattr(
+            api_routes,
+            "_pick_directory_with_windows_dialog",
+            lambda initial_path=None: selected,
+        )
 
-    def test_list_directory_children(self, client, temp_dir):
-        child = temp_dir / "child"
-        child.mkdir()
-        (temp_dir / "file.txt").write_text("not a directory", encoding="utf-8")
-
-        response = client.get("/api/filesystem/children", params={"path": str(temp_dir)})
+        response = client.post(
+            "/api/filesystem/pick-directory",
+            params={"initial_path": str(temp_dir)},
+        )
         assert response.status_code == 200
-        data = response.json()
-        assert data["path"] == str(temp_dir.resolve())
-        assert {"name": "child", "path": str(child)} in data["children"]
-        assert all(item["name"] != "file.txt" for item in data["children"])
+        assert response.json()["path"] == str(selected)
 
 
 class TestLaneAPI:
@@ -292,6 +289,21 @@ class TestPermissionAPI:
         assert "allowed" in data
         assert "denied" in data
         assert "tool_breakdown" in data
+
+    def test_permission_gate_can_be_read_and_updated(self, client, session_id):
+        response = client.get(f"/api/sessions/{session_id}/permissions/gate")
+        assert response.status_code == 200
+        assert "ls" in response.json()["command_allowlist"]
+
+        response = client.put(
+            f"/api/sessions/{session_id}/permissions/gate",
+            json={"command_allowlist": [" Echo ", "git status", "echo"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["command_allowlist"] == ["echo", "git status"]
+
+        detail = client.get(f"/api/sessions/{session_id}").json()
+        assert detail["command_allowlist"] == ["echo", "git status"]
 
 
 class TestWebSocketEndpoint:

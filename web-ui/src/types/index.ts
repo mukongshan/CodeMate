@@ -54,6 +54,7 @@ export interface WSEnvelope {
 export interface SessionSnapshot {
   session_id: string;
   workspace: string;
+  command_allowlist: string[];
   current_lane: string;
   agent_state: AgentState;
   is_running: boolean;

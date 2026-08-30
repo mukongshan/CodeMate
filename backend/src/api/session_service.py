@@ -47,7 +47,10 @@ class SessionRuntime:
         self.storage = SessionStorage(session_id, config.data_dir)
         self.lane_manager = LaneManager(session_id, config.data_dir)
         self.log = StructuredLogger(session_id, config.log_dir)
-        self.permission_manager = PermissionManager(workspace=config.workspace)
+        self.permission_manager = PermissionManager(
+            workspace=config.workspace,
+            config={"command_allowlist": config.command_allowlist},
+        )
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
         self._run_lock = asyncio.Lock()
         self._emit: Optional[EmitFn] = None
@@ -200,6 +203,7 @@ class SessionRuntime:
             "current_lane": self.lane_manager.current_lane,
             "agent_state": self.state.value,
             "is_running": self.is_running,
+            "command_allowlist": self.permission_manager.get_command_allowlist(),
             "lanes": [lane.to_api_dict() for lane in lanes],
             "entries": [entry.to_api_dict() for entry in self.storage.all_entries()],
         }
@@ -219,7 +223,9 @@ class SessionManager:
         if sid in self._sessions:
             return self._sessions[sid]
         runtime_config = self._config_for_session(sid, workspace)
-        self._write_meta(sid, runtime_config.workspace)
+        self._write_meta(
+            sid, runtime_config.workspace, runtime_config.command_allowlist
+        )
         runtime = SessionRuntime(sid, runtime_config)
         self._sessions[sid] = runtime
         return runtime
@@ -287,11 +293,18 @@ class SessionManager:
     def _config_for_session(
         self, session_id: str, workspace: Optional[str] = None
     ) -> AppConfig:
+        meta = self._read_meta(session_id)
+        raw_allowlist = meta.get("command_allowlist")
         return replace(
             self.config,
             workspace=self._resolve_workspace(workspace)
             if workspace
             else self._workspace_for_session(session_id),
+            command_allowlist=(
+                [str(item) for item in raw_allowlist if str(item).strip()]
+                if isinstance(raw_allowlist, list)
+                else list(self.config.command_allowlist)
+            ),
         )
 
     @staticmethod
@@ -317,10 +330,29 @@ class SessionManager:
             logger.warning("session %s 的 meta 文件读取失败，使用默认配置", session_id)
             return {}
 
-    def _write_meta(self, session_id: str, workspace: Path) -> None:
+    def _write_meta(
+        self, session_id: str, workspace: Path, command_allowlist: list[str] | None = None
+    ) -> None:
         path = self._meta_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "workspace": str(workspace),
+            "command_allowlist": command_allowlist
+            if command_allowlist is not None
+            else list(self.config.command_allowlist),
+        }
         path.write_text(
-            json.dumps({"workspace": str(workspace)}, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
+
+    def update_command_allowlist(
+        self, session_id: str, commands: list[str]
+    ) -> SessionRuntime:
+        runtime = self.get_or_load(session_id)
+        if runtime is None:
+            raise KeyError(session_id)
+        normalized = runtime.permission_manager.set_command_allowlist(commands)
+        runtime.config = replace(runtime.config, command_allowlist=normalized)
+        self._write_meta(session_id, runtime.config.workspace, normalized)
+        return runtime

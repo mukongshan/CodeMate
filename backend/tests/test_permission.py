@@ -5,7 +5,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from src.permission.manager import PermissionManager, PermissionLevel
-from src.permission.rules import is_safe_path, is_dangerous_command, is_system_path
+from src.permission.rules import (
+    inspect_command_safety,
+    is_command_allowlisted,
+    is_safe_path,
+    is_dangerous_command,
+    is_system_path,
+)
 
 
 class TestPermissionRules:
@@ -41,6 +47,25 @@ class TestPermissionRules:
 
         dangerous, _ = is_dangerous_command("ls -la")
         assert not dangerous
+
+    def test_command_allowlist_matches_simple_commands_and_prefixes(self):
+        allowlist = ["ls", "git status", "python"]
+
+        assert is_command_allowlisted("ls -la", allowlist)
+        assert is_command_allowlisted("git status --short", allowlist)
+        assert is_command_allowlisted("ls && git status", allowlist)
+        assert not is_command_allowlisted("ls && rm -rf output", allowlist)
+        assert not is_command_allowlisted("python -c 'print(1)' | sh", allowlist)
+
+    def test_command_safety_rejects_workspace_escape(self, tmp_path):
+        outside = tmp_path.parent / "outside.txt"
+
+        safe, reason = inspect_command_safety(
+            f"echo blocked > {outside}", tmp_path
+        )
+
+        assert not safe
+        assert "workspace 外" in reason
 
 
 class TestPermissionManager:
@@ -78,11 +103,14 @@ class TestPermissionManager:
 
     @pytest.mark.asyncio
     async def test_dangerous_command_denied(self, manager):
-        """测试危险命令被拒绝。"""
+        """测试危险命令会进入用户确认；用户拒绝后不执行。"""
+        manager.ask_user_callback = AsyncMock(return_value={"action": "deny"})
+
         decision = await manager.check("bash", {"command": "rm -rf /"})
 
         assert not decision.allowed
-        assert "危险命令" in decision.reason
+        request = manager.ask_user_callback.call_args.args[0]
+        assert "危险命令" in request["warning"]
 
     @pytest.mark.asyncio
     async def test_user_confirmation_required(self, manager):
@@ -94,6 +122,32 @@ class TestPermissionManager:
 
         assert decision.allowed
         assert decision.user_confirmed
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_command_auto_approved(self, manager):
+        manager.set_command_allowlist(["echo"])
+
+        decision = await manager.check("bash", {"command": "echo hello"})
+
+        assert decision.allowed
+        assert decision.auto_approved
+        assert "白名单" in decision.reason
+        assert manager.ask_user_callback is None
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_command_with_external_write_requires_confirmation(
+        self, manager
+    ):
+        manager.set_command_allowlist(["echo"])
+        manager.ask_user_callback = AsyncMock(return_value={"action": "deny"})
+
+        decision = await manager.check(
+            "bash", {"command": "echo hello > ../outside.txt"}
+        )
+
+        assert not decision.allowed
+        assert manager.ask_user_callback.await_count == 1
+        assert "workspace 外" in manager.ask_user_callback.call_args.args[0]["warning"]
 
     @pytest.mark.asyncio
     async def test_decision_memory(self, manager):

@@ -14,6 +14,7 @@ interface AppState {
   // Session 相关
   sessionId: string | null;
   workspace: string;
+  commandAllowlist: string[];
   currentLane: string;
   lanes: LanePointer[];
   agentState: AgentState;
@@ -46,6 +47,7 @@ interface AppState {
   setCurrentLane: (lane: string) => void;
   setAgentState: (state: AgentState) => void;
   setIsRunning: (running: boolean) => void;
+  setCommandAllowlist: (commands: string[]) => void;
 
   addEntry: (entry: Entry) => void;
   updateEntries: (entries: Entry[]) => void;
@@ -75,6 +77,7 @@ export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
   workspace: '',
+  commandAllowlist: [],
   currentLane: 'main',
   lanes: [],
   agentState: 'idle',
@@ -102,6 +105,7 @@ export const useStore = create<AppState>((set) => ({
     set({
       sessionId,
       workspace: data.workspace || '',
+      commandAllowlist: data.command_allowlist || [],
       currentLane: data.current_lane || 'main',
       lanes: data.lanes || [],
       agentState: data.agent_state || 'idle',
@@ -118,6 +122,7 @@ export const useStore = create<AppState>((set) => ({
     set({
       sessionId: null,
       workspace: '',
+      commandAllowlist: [],
       currentLane: 'main',
       lanes: [],
       agentState: 'idle',
@@ -139,6 +144,7 @@ export const useStore = create<AppState>((set) => ({
   setCurrentLane: (lane) => set({ currentLane: lane }),
   setAgentState: (state) => set({ agentState: state }),
   setIsRunning: (running) => set({ isRunning: running }),
+  setCommandAllowlist: (commands) => set({ commandAllowlist: commands }),
 
   addEntry: (entry) =>
     set((state) => ({
