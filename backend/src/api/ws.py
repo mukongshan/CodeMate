@@ -92,17 +92,7 @@ async def _handle_send_message(runtime: SessionRuntime, message: dict):
         return
 
     try:
-        result = await runtime.run(data.content, lane=data.lane)
-        await runtime.emit(
-            "run_completed",
-            {
-                "run_id": result.run_id,
-                "status": result.status,
-                "iterations": result.iterations,
-                "total_tokens": result.total_tokens,
-                "duration": result.duration,
-            },
-        )
+        await runtime.run(data.content, lane=data.lane)
     except AgentError as exc:
         await runtime.emit(
             "run_error",
