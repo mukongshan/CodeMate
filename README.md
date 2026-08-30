@@ -21,7 +21,7 @@ CodeMate/
 │   ├── main.py            # FastAPI 应用入口
 │   └── requirements.txt   # Python 依赖
 │
-├── frontend/               # 前端（React + TypeScript）
+├── web-ui/                 # 前端（React + TypeScript）
 │   ├── src/               # 源代码
 │   │   ├── components/   # React 组件
 │   │   ├── store/        # 状态管理
@@ -70,7 +70,7 @@ python main.py
 
 ```bash
 # 进入前端目录
-cd frontend
+cd web-ui
 
 # 安装依赖
 npm install
@@ -183,7 +183,7 @@ mypy src/
 
 ### 构建前端
 ```bash
-cd frontend
+cd web-ui
 npm run build
 ```
 
@@ -203,15 +203,9 @@ npm run build
 ```bash
 # LLM Provider
 LLM_PROVIDER=openai  # 或 deepseek
-LLM_MODEL=gpt-4
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 或使用 DeepSeek
-# LLM_PROVIDER=deepseek
-# LLM_MODEL=deepseek-chat
-# DEEPSEEK_API_KEY=...
-# DEEPSEEK_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=sk-...
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
 
 # 应用配置
 WORKSPACE=./workspace
@@ -219,6 +213,7 @@ DATA_DIR=./data/sessions
 LOG_DIR=./logs
 MAX_ITERATIONS=15
 MAX_CONTEXT_TOKENS=8000
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 # 服务器配置
 HOST=0.0.0.0

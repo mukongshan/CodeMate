@@ -51,7 +51,7 @@ CodeMate/
 │   ├── main.py                      # FastAPI 应用入口
 │   └── requirements.txt             # Python 依赖
 │
-├── frontend/                         # 前端应用（React + TypeScript）
+├── web-ui/                           # 前端应用（React + TypeScript）
 │   ├── src/
 │   │   ├── components/             # React 组件
 │   │   │   ├── tree/              # 树形画布
@@ -229,14 +229,14 @@ Agent 主循环
 
 ### 启动顺序
 1. **后端**：`cd backend && python main.py`
-2. **前端**：`cd frontend && npm run dev`
+2. **前端**：`cd web-ui && npm run dev`
 3. **浏览器**：访问 http://localhost:5173
 
 ### 典型开发任务
 - **添加新工具**：在 `backend/src/tools/` 下创建新工具类
-- **添加新组件**：在 `frontend/src/components/` 下创建新组件
+- **添加新组件**：在 `web-ui/src/components/` 下创建新组件
 - **修改 API**：更新 `backend/src/api/routes.py` 和前端类型定义
-- **调整样式**：修改 `frontend/tailwind.config.js` 或组件内的 className
+- **调整样式**：修改 `web-ui/tailwind.config.js` 或组件内的 className
 
 ## 部署建议
 
@@ -249,7 +249,7 @@ gunicorn backend.main:app -w 4 -k uvicorn.workers.UvicornWorker
 ### 前端部署
 ```bash
 # 构建静态文件
-cd frontend && npm run build
+cd web-ui && npm run build
 
 # 使用 nginx 或其他静态服务器托管 dist/
 ```
@@ -257,11 +257,11 @@ cd frontend && npm run build
 ### Docker 部署
 ```dockerfile
 # 多阶段构建
-FROM node:18 AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
+FROM node:18 AS web-ui-build
+WORKDIR /app/web-ui
+COPY web-ui/package*.json ./
 RUN npm install
-COPY frontend/ ./
+COPY web-ui/ ./
 RUN npm run build
 
 FROM python:3.11
@@ -269,6 +269,6 @@ WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install -r requirements.txt
 COPY backend/ ./backend/
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY --from=web-ui-build /app/web-ui/dist ./web-ui/dist
 CMD ["python", "backend/main.py"]
 ```

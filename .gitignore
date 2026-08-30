@@ -21,11 +21,11 @@ dist/
 .coverage
 htmlcov/
 
-# Node.js / Frontend
+# Node.js / Web UI
 node_modules/
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
+web-ui/node_modules/
+web-ui/dist/
+web-ui/.vite/
 *.local
 .cache/
 .parcel-cache/
@@ -55,7 +55,7 @@ config.local.json
 logs/
 *.log
 backend/logs/
-frontend/logs/
+web-ui/logs/
 
 # Runtime data
 backend/data/sessions/
