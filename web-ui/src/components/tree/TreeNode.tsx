@@ -1,121 +1,88 @@
 import { memo } from 'react';
 import { Handle, Position } from 'reactflow';
-import { User, Bot, Wrench, UserSearch, GitBranch } from 'lucide-react';
+import { Bot, Hammer, User } from 'lucide-react';
 import type { Entry } from '../../types';
+
+export interface ConversationRound {
+  id: string;
+  lane: string;
+  seq: number;
+  depth: number;
+  timestamp: number;
+  user: Entry;
+  assistants: Entry[];
+  tools: Entry[];
+  entryIds: string[];
+}
 
 interface TreeNodeProps {
   data: {
-    entry: Entry;
+    round: ConversationRound;
     isHighlighted: boolean;
     laneColor: string;
   };
 }
 
 export default memo(function TreeNode({ data }: TreeNodeProps) {
-  const { entry, isHighlighted, laneColor } = data;
-  const toolNames = Array.isArray(entry.tool_names) ? entry.tool_names : [];
-
-  const getRoleIcon = () => {
-    switch (entry.role) {
-      case 'user':
-        return <User className="w-4 h-4" />;
-      case 'assistant':
-        return <Bot className="w-4 h-4" />;
-      case 'tool':
-        if (toolNames.includes('delegate_task')) {
-          return <UserSearch className="w-4 h-4" />;
-        }
-        return <Wrench className="w-4 h-4" />;
-      default:
-        return null;
-    }
-  };
-
-  const getTime = () => {
-    const date = new Date(entry.timestamp * 1000);
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  };
-
-  // 判断是否是分叉点
-  const isFork = false; // TODO: 需要计算子节点数
-
-  const borderColor = isHighlighted ? laneColor : 'rgba(11, 11, 11, 0.10)';
-  const borderWidth = isFork ? '2px' : '1px';
+  const { round, isHighlighted, laneColor } = data;
+  const assistant = round.assistants.at(-1);
+  const borderColor = isHighlighted ? laneColor : 'rgba(11, 11, 11, 0.12)';
 
   return (
     <div
-      className="relative bg-surface-2 rounded-md shadow-card overflow-hidden"
+      className="relative overflow-hidden rounded-md bg-surface-2 shadow-sm transition-shadow hover:shadow-card"
       style={{
-        border: `${borderWidth} solid ${borderColor}`,
-        width: '280px',
-        minHeight: '80px',
+        width: '204px',
+        height: '86px',
+        border: `1px solid ${borderColor}`,
       }}
     >
-      <Handle type="target" position={Position.Top} />
+      <div
+        className="absolute left-0 top-0 h-full w-1"
+        style={{ backgroundColor: laneColor, opacity: isHighlighted ? 1 : 0.45 }}
+      />
 
-      <div className="p-3">
-        {/* 头部：图标 + 角色 + 时间 */}
-        <div className="flex items-center gap-2 mb-2">
-          <div className="text-text-secondary">{getRoleIcon()}</div>
-          <span className="text-xs text-text-secondary">
-            {entry.role === 'user' ? 'User' : entry.role === 'assistant' ? 'Agent' : 'Tool'}
-          </span>
-          <span className="text-xs text-text-muted">·</span>
-          <span className="text-xs text-text-muted">{getTime()}</span>
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!h-2 !w-2 !border-0"
+        style={{ backgroundColor: laneColor }}
+      />
 
-          {/* 状态点（仅 tool 节点） */}
-          {entry.role === 'tool' && (
-            <div className="ml-auto">
-              {entry.is_error ? (
-                <div className="w-2 h-2 rounded-full bg-status-error" />
-              ) : (
-                <div className="w-2 h-2 rounded-full bg-status-success" />
-              )}
-            </div>
+      <div className="flex h-full flex-col gap-1 px-2.5 py-2 pl-3">
+        <div className="flex items-center gap-1.5 text-[11px] leading-4 text-text-muted">
+          <span className="font-medium text-text-secondary">{round.lane}</span>
+          <span>·</span>
+          <span>{new Date(round.timestamp * 1000).toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+          })}</span>
+          {round.tools.length > 0 && (
+            <span className="ml-auto inline-flex items-center gap-1 rounded bg-surface-3 px-1.5 py-0.5 text-[10px] leading-3">
+              <Hammer className="h-3 w-3" />
+              {round.tools.length}
+            </span>
           )}
         </div>
 
-        {/* 内容摘要 */}
-        <div className="text-sm text-text-primary mb-2 line-clamp-2">
-          {entry.content}
-        </div>
-
-        {/* 工具名 */}
-        {toolNames.length > 0 && (
-          <div className="flex flex-wrap gap-1 mb-2">
-            {toolNames.slice(0, 1).map((name) => (
-              <span
-                key={name}
-                className="text-xs px-2 py-0.5 bg-surface-3 rounded font-mono"
-              >
-                {name}
-              </span>
-            ))}
-            {toolNames.length > 1 && (
-              <span className="text-xs px-2 py-0.5 bg-surface-3 rounded">
-                +{toolNames.length - 1}
-              </span>
-            )}
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-[11px] leading-4 text-text-secondary">
+            <User className="h-3.5 w-3.5 shrink-0" strokeWidth={2.2} />
+            <span className="truncate">{round.user.content || '(empty)'}</span>
           </div>
-        )}
-
-        {/* 底部：Lane 标签 + 分叉标记 */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1">
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: laneColor }}
-            />
-            <span className="text-xs text-text-muted">{entry.lane}</span>
+          <div className="mt-0.5 flex items-center gap-1.5 text-xs leading-4 text-text-primary">
+            <Bot className="h-3.5 w-3.5 shrink-0 text-text-secondary" strokeWidth={2.2} />
+            <span className="truncate">{assistant?.content || '等待 Agent 回复'}</span>
           </div>
-
-          {isFork && (
-            <GitBranch className="w-3 h-3 text-text-muted" />
-          )}
         </div>
       </div>
 
-      <Handle type="source" position={Position.Bottom} />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!h-2 !w-2 !border-0"
+        style={{ backgroundColor: laneColor }}
+      />
     </div>
   );
 });

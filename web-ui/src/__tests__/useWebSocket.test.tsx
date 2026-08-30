@@ -120,5 +120,15 @@ describe('useWebSocket', () => {
     expect(useStore.getState().permissionRequest?.request_id).toBe('p1');
     expect(useStore.getState().agentState).toBe('executing_tool');
     expect(useStore.getState().toasts.at(-1)?.message).toBe('boom');
+
+    act(() => {
+      ws.emit({ type: 'run_started', data: { run_id: 'r2', lane: 'main' } });
+    });
+    expect(useStore.getState().isRunning).toBe(true);
+
+    act(() => {
+      ws.emit({ type: 'run_completed', data: { run_id: 'r2', status: 'completed', iterations: 1, total_tokens: 1, duration: 0.1 } });
+    });
+    expect(useStore.getState().isRunning).toBe(false);
   });
 });

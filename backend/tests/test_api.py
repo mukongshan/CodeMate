@@ -83,6 +83,26 @@ class TestSessionAPI:
         data = response.json()
         assert data["session_id"] == "test-123"
 
+    def test_create_session_with_workspace(self, client, temp_dir):
+        """测试创建会话时绑定工作区目录。"""
+        workspace = temp_dir / "custom-workspace"
+        workspace.mkdir()
+
+        response = client.post(
+            "/api/sessions",
+            json={"session_id": "workspace-test", "workspace": str(workspace)},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["workspace"] == str(workspace.resolve())
+
+        detail = client.get("/api/sessions/workspace-test").json()
+        assert detail["workspace"] == str(workspace.resolve())
+
+        sessions = client.get("/api/sessions").json()["sessions"]
+        listed = next(item for item in sessions if item["session_id"] == "workspace-test")
+        assert listed["workspace"] == str(workspace.resolve())
+
     def test_list_sessions(self, client):
         """测试列出所有会话。"""
         # 先创建一个会话
@@ -130,6 +150,30 @@ class TestSessionAPI:
         # 验证已删除
         get_resp = client.get(f"/api/sessions/{session_id}")
         assert get_resp.status_code == 400
+
+
+class TestFilesystemAPI:
+    """测试本地目录选择 API。"""
+
+    def test_list_roots(self, client):
+        response = client.get("/api/filesystem/roots")
+        assert response.status_code == 200
+        data = response.json()
+        assert "roots" in data
+        assert isinstance(data["roots"], list)
+        assert data["roots"]
+
+    def test_list_directory_children(self, client, temp_dir):
+        child = temp_dir / "child"
+        child.mkdir()
+        (temp_dir / "file.txt").write_text("not a directory", encoding="utf-8")
+
+        response = client.get("/api/filesystem/children", params={"path": str(temp_dir)})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["path"] == str(temp_dir.resolve())
+        assert {"name": "child", "path": str(child)} in data["children"]
+        assert all(item["name"] != "file.txt" for item in data["children"])
 
 
 class TestLaneAPI:

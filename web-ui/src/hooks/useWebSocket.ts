@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import type { WSEnvelope } from '../types';
 
@@ -11,7 +11,7 @@ export function useWebSocket(sessionId: string | null) {
     setWsConnected,
     setWsReconnecting,
     setAgentState,
-    addEntry,
+    setIsRunning,
     addMessage,
     updateMessage,
     appendMessageText,
@@ -21,19 +21,20 @@ export function useWebSocket(sessionId: string | null) {
     addToast,
   } = useStore();
 
+  const syncSessionSnapshot = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSession(sessionId, data);
+    } catch (error) {
+      console.warn('Failed to sync session snapshot:', error);
+    }
+  }, [sessionId, setSession]);
+
   useEffect(() => {
     if (!sessionId) return;
-
-    const syncSessionSnapshot = async () => {
-      try {
-        const res = await fetch(`/api/sessions/${sessionId}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        setSession(sessionId, data);
-      } catch (error) {
-        console.warn('Failed to sync session snapshot:', error);
-      }
-    };
 
     const connect = () => {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -91,14 +92,19 @@ export function useWebSocket(sessionId: string | null) {
         wsRef.current = null;
       }
     };
-  }, [sessionId, setSession, setWsConnected, setWsReconnecting, addToast]);
+  }, [
+    sessionId,
+    syncSessionSnapshot,
+    setWsConnected,
+    setWsReconnecting,
+    addToast,
+  ]);
 
   const handleEvent = (envelope: WSEnvelope) => {
     const { type, data } = envelope;
 
     switch (type) {
       case 'node_added':
-        addEntry(data as any);
         break;
 
       case 'text_delta':
@@ -167,6 +173,12 @@ export function useWebSocket(sessionId: string | null) {
 
       case 'run_started':
         setAgentState('preparing');
+        setIsRunning(true);
+        break;
+
+      case 'run_completed':
+        setIsRunning(false);
+        void syncSessionSnapshot();
         break;
 
       case 'llm_response':
@@ -191,6 +203,7 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'run_error':
+        setIsRunning(false);
         addToast({ type: 'error', message: data.message || 'Run failed' });
         break;
 

@@ -1,110 +1,116 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import ReactFlow, {
-  BackgroundVariant,
-  type Node,
-  type Edge,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
-  useNodesState,
+  type Edge,
+  type Node,
   useEdgesState,
+  useNodesState,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import dagre from 'dagre';
 import { useStore } from '../../store';
-import TreeNode from './TreeNode';
+import type { Entry } from '../../types';
+import { getLanePath } from '../../utils/history';
+import TreeNode, { type ConversationRound } from './TreeNode';
+import TreeNodeDetailPanel from './TreeNodeDetailPanel';
 
 const nodeTypes = {
   custom: TreeNode,
 };
 
+const laneColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'];
+
 export default function TreeCanvas() {
-  const { entries, currentLane, lanes, highlightedPaths, setHighlightedPaths, setSelectedNode } = useStore();
+  const {
+    entries,
+    currentLane,
+    lanes,
+    highlightedPaths,
+    selectedNodeId,
+    setHighlightedPaths,
+    setSelectedNode,
+  } = useStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // 计算当前 Lane 的高亮路径
+  const roundGraph = useMemo(
+    () => buildRoundGraph(entries, lanes.map((lane) => lane.lane)),
+    [entries, lanes]
+  );
+
   useEffect(() => {
-    const currentLanePointer = lanes.find(l => l.lane === currentLane);
-    if (!currentLanePointer || !currentLanePointer.leaf_id) {
-      setHighlightedPaths(new Set());
+    const pathSet = new Set(getLanePath(entries, lanes, currentLane).map((entry) => entry.id));
+    setHighlightedPaths(pathSet);
+  }, [currentLane, lanes, entries, setHighlightedPaths]);
+
+  useEffect(() => {
+    if (roundGraph.rounds.length === 0) {
+      setNodes([]);
+      setEdges([]);
       return;
     }
 
-    // 从 leaf_id 沿 parent 向上走到根
-    const pathSet = new Set<string>();
-    let currentId: string | null = currentLanePointer.leaf_id;
-
-    while (currentId) {
-      pathSet.add(currentId);
-      const entry = entries.find(e => e.id === currentId);
-      currentId = entry?.parent || null;
-    }
-
-    setHighlightedPaths(pathSet);
-  }, [currentLane, lanes, entries]);
-
-  // 转换 entries 为 React Flow 的节点和边
-  useEffect(() => {
-    if (entries.length === 0) return;
-
-    // 创建节点
-    const newNodes: Node[] = entries.map((entry) => {
-      const isHighlighted = highlightedPaths.has(entry.id);
-      const laneIndex = lanes.findIndex(l => l.lane === entry.lane);
-      const laneColor = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'][laneIndex % 4];
+    const newNodes: Node[] = roundGraph.rounds.map((round) => {
+      const laneIndex = getLaneIndex(round.lane, lanes.map((lane) => lane.lane));
+      const laneColor = laneColors[laneIndex % laneColors.length];
+      const isHighlighted = round.entryIds.some((id) => highlightedPaths.has(id));
 
       return {
-        id: entry.id,
+        id: round.id,
         type: 'custom',
-        position: { x: 0, y: 0 }, // 将由布局算法设置
+        position: {
+          x: laneIndex * 228,
+          y: round.depth * 136,
+        },
         data: {
-          entry,
+          round,
           isHighlighted,
           laneColor,
         },
       };
     });
 
-    // 创建边
-    const newEdges: Edge[] = entries
-      .filter(e => e.parent)
-      .map((entry) => {
-        const isHighlighted = highlightedPaths.has(entry.id) && highlightedPaths.has(entry.parent!);
-        const laneIndex = lanes.findIndex(l => l.lane === entry.lane);
-        const laneColor = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'][laneIndex % 4];
+    const newEdges: Edge[] = roundGraph.edges.map((edge) => {
+      const targetRound = roundGraph.roundById.get(edge.target);
+      const laneIndex = getLaneIndex(targetRound?.lane || currentLane, lanes.map((lane) => lane.lane));
+      const laneColor = laneColors[laneIndex % laneColors.length];
+      const isHighlighted =
+        roundGraph.roundById.get(edge.source)?.entryIds.some((id) => highlightedPaths.has(id)) &&
+        targetRound?.entryIds.some((id) => highlightedPaths.has(id));
 
-        return {
-          id: `${entry.parent}-${entry.id}`,
-          source: entry.parent!,
-          target: entry.id,
-          type: 'smoothstep',
-          animated: isHighlighted,
-          style: {
-            stroke: isHighlighted ? laneColor : 'rgba(11, 11, 11, 0.10)',
-            strokeWidth: isHighlighted ? 2.5 : 1,
-          },
-        };
-      });
+      return {
+        id: `${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        type: 'smoothstep',
+        animated: Boolean(isHighlighted),
+        zIndex: isHighlighted ? 2 : 1,
+        style: {
+          stroke: isHighlighted ? laneColor : 'rgba(64, 63, 58, 0.32)',
+          strokeWidth: isHighlighted ? 2.25 : 1.4,
+          strokeDasharray: isHighlighted ? undefined : '5 5',
+        },
+      };
+    });
 
-    // 使用 dagre 计算布局
-    const layoutedNodes = getLayoutedElements(newNodes, newEdges);
-    setNodes(layoutedNodes);
+    setNodes(newNodes);
     setEdges(newEdges);
-  }, [entries, highlightedPaths, lanes]);
+  }, [roundGraph, highlightedPaths, lanes, currentLane, setNodes, setEdges]);
 
-  const onNodeClick = (_: any, node: Node) => {
-    setSelectedNode(node.id);
-  };
+  const selectedRound = selectedNodeId
+    ? roundGraph.roundById.get(selectedNodeId)
+    : undefined;
 
   return (
-    <div className="w-full h-full bg-surface-1">
+    <div className="relative h-full w-full bg-surface-1">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
+        onNodeClick={(_, node) => setSelectedNode(node.id)}
         nodeTypes={nodeTypes}
         fitView
         minZoom={0.1}
@@ -114,40 +120,134 @@ export default function TreeCanvas() {
         <Controls />
         <MiniMap
           nodeColor={(node) => {
-            const isHighlighted = highlightedPaths.has(node.id);
-            return isHighlighted ? '#2a78d6' : '#898781';
+            const round = roundGraph.roundById.get(node.id);
+            const laneIndex = getLaneIndex(round?.lane || currentLane, lanes.map((lane) => lane.lane));
+            const isHighlighted = round?.entryIds.some((id) => highlightedPaths.has(id));
+            return isHighlighted ? laneColors[laneIndex % laneColors.length] : '#898781';
           }}
           maskColor="rgba(252, 252, 251, 0.8)"
         />
       </ReactFlow>
+
+      {selectedRound && (
+        <TreeNodeDetailPanel
+          round={selectedRound}
+          onClose={() => setSelectedNode(null)}
+        />
+      )}
     </div>
   );
 }
 
-// 使用 dagre 计算布局
-function getLayoutedElements(nodes: Node[], edges: Edge[]) {
-  const dagreGraph = new dagre.graphlib.Graph();
-  dagreGraph.setDefaultEdgeLabel(() => ({}));
-  dagreGraph.setGraph({ rankdir: 'TB', nodesep: 28, ranksep: 56 });
+interface RoundGraph {
+  rounds: ConversationRound[];
+  roundById: Map<string, ConversationRound>;
+  edges: Array<{ source: string; target: string }>;
+}
 
-  nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: 280, height: 80 });
-  });
+function buildRoundGraph(entries: Entry[], laneNames: string[]): RoundGraph {
+  const sortedEntries = [...entries].sort((a, b) => a.seq - b.seq);
+  const entryById = new Map(sortedEntries.map((entry) => [entry.id, entry]));
+  const roundById = new Map<string, ConversationRound>();
+  const roundIdByEntryId = new Map<string, string>();
 
-  edges.forEach((edge) => {
-    dagreGraph.setEdge(edge.source, edge.target);
-  });
-
-  dagre.layout(dagreGraph);
-
-  return nodes.map((node) => {
-    const nodeWithPosition = dagreGraph.node(node.id);
-    return {
-      ...node,
-      position: {
-        x: nodeWithPosition.x - 140,
-        y: nodeWithPosition.y - 40,
-      },
+  for (const entry of sortedEntries) {
+    if (entry.role !== 'user') continue;
+    const round: ConversationRound = {
+      id: entry.id,
+      lane: entry.lane,
+      seq: entry.seq,
+      depth: 0,
+      timestamp: entry.timestamp,
+      user: entry,
+      assistants: [],
+      tools: [],
+      entryIds: [entry.id],
     };
-  });
+    roundById.set(round.id, round);
+    roundIdByEntryId.set(entry.id, round.id);
+  }
+
+  for (const entry of sortedEntries) {
+    if (entry.role === 'user') continue;
+    const ownerRoundId = findOwnerUserId(entry, entryById);
+    const round = ownerRoundId ? roundById.get(ownerRoundId) : undefined;
+    if (!round) continue;
+
+    if (entry.role === 'assistant') {
+      round.assistants.push(entry);
+    } else if (entry.role === 'tool') {
+      round.tools.push(entry);
+    }
+    round.entryIds.push(entry.id);
+    round.timestamp = Math.max(round.timestamp, entry.timestamp);
+    roundIdByEntryId.set(entry.id, round.id);
+  }
+
+  const parentByRoundId = new Map<string, string>();
+  for (const round of roundById.values()) {
+    const parentRoundId = findParentRoundId(round.user, entryById, roundIdByEntryId);
+    if (parentRoundId && parentRoundId !== round.id) {
+      parentByRoundId.set(round.id, parentRoundId);
+    }
+  }
+
+  const depthCache = new Map<string, number>();
+  const resolveDepth = (roundId: string, seen = new Set<string>()): number => {
+    if (depthCache.has(roundId)) return depthCache.get(roundId)!;
+    if (seen.has(roundId)) return 0;
+    seen.add(roundId);
+    const parentRoundId = parentByRoundId.get(roundId);
+    const depth = parentRoundId ? resolveDepth(parentRoundId, seen) + 1 : 0;
+    depthCache.set(roundId, depth);
+    return depth;
+  };
+
+  const rounds = [...roundById.values()]
+    .map((round) => ({
+      ...round,
+      assistants: [...round.assistants].sort((a, b) => a.seq - b.seq),
+      tools: [...round.tools].sort((a, b) => a.seq - b.seq),
+      depth: resolveDepth(round.id),
+    }))
+    .sort((a, b) => a.depth - b.depth || getLaneIndex(a.lane, laneNames) - getLaneIndex(b.lane, laneNames) || a.seq - b.seq);
+
+  return {
+    rounds,
+    roundById: new Map(rounds.map((round) => [round.id, round])),
+    edges: [...parentByRoundId.entries()].map(([target, source]) => ({ source, target })),
+  };
+}
+
+function findOwnerUserId(entry: Entry, entryById: Map<string, Entry>): string | null {
+  let parentId = entry.parent;
+  const seen = new Set<string>();
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = entryById.get(parentId);
+    if (!parent) return null;
+    if (parent.role === 'user') return parent.id;
+    parentId = parent.parent;
+  }
+  return null;
+}
+
+function findParentRoundId(
+  userEntry: Entry,
+  entryById: Map<string, Entry>,
+  roundIdByEntryId: Map<string, string>
+): string | null {
+  let parentId = userEntry.parent;
+  const seen = new Set<string>();
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const roundId = roundIdByEntryId.get(parentId);
+    if (roundId) return roundId;
+    parentId = entryById.get(parentId)?.parent || null;
+  }
+  return null;
+}
+
+function getLaneIndex(lane: string, laneNames: string[]): number {
+  return Math.max(0, laneNames.indexOf(lane));
 }

@@ -6,10 +6,22 @@ import { useStore } from '../store';
 
 describe('Toolbar', () => {
   it('switches lanes and opens compare drawer', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    });
+    const snapshot = {
+      session_id: 'session-1',
+      workspace: 'D:/work',
+      current_lane: 'feature-x',
+      agent_state: 'idle',
+      is_running: false,
+      lanes: [
+        { lane: 'main', leaf_id: 'root', seq: 1, timestamp: 1, created_from: null, description: '' },
+        { lane: 'feature-x', leaf_id: 'node-1', seq: 2, timestamp: 2, created_from: 'root', description: 'branch' },
+      ],
+      entries: [],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, json: async () => snapshot });
     vi.stubGlobal('fetch', fetchMock as any);
 
     useStore.setState({

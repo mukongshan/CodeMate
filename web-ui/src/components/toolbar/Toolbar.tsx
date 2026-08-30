@@ -1,27 +1,48 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { ChevronDown, Plus, GitCompare, Settings } from 'lucide-react';
+import { ChevronDown, Plus, GitCompare, LogOut } from 'lucide-react';
 import AgentStatusBadge from './AgentStatusBadge';
 import CreateLaneModal from '../modals/CreateLaneModal';
 
 export default function Toolbar() {
-  const { currentLane, lanes, agentState, setShowCompareDrawer } = useStore();
+  const {
+    sessionId,
+    workspace,
+    currentLane,
+    lanes,
+    agentState,
+    setSession,
+    clearSession,
+    setShowCompareDrawer,
+  } = useStore();
   const [showLaneDropdown, setShowLaneDropdown] = useState(false);
   const [showCreateLane, setShowCreateLane] = useState(false);
 
+  const laneColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'];
+
+  const syncSession = async () => {
+    if (!sessionId) return;
+    const res = await fetch(`/api/sessions/${sessionId}`);
+    const data = await res.json();
+    if (res.ok) {
+      setSession(sessionId, data);
+    }
+  };
+
   const switchLane = async (lane: string) => {
     try {
-      await fetch(`/api/sessions/${useStore.getState().sessionId}/lanes/${lane}/switch`, {
+      if (!sessionId) return;
+      const res = await fetch(`/api/sessions/${sessionId}/lanes/${lane}/switch`, {
         method: 'POST',
       });
-      useStore.getState().setCurrentLane(lane);
+      if (!res.ok) return;
+      await syncSession();
       setShowLaneDropdown(false);
     } catch (error) {
       console.error('Failed to switch lane:', error);
     }
   };
-
-  const laneColors = ['lane-blue', 'lane-orange', 'lane-aqua', 'lane-yellow'];
+  const activeLaneIndex = Math.max(0, lanes.findIndex(l => l.lane === currentLane));
 
   return (
     <div className="h-[52px] border-b border-border bg-surface-2 flex items-center justify-between px-4">
@@ -35,7 +56,10 @@ export default function Toolbar() {
             onClick={() => setShowLaneDropdown(!showLaneDropdown)}
             className="flex items-center gap-2 px-3 py-1.5 bg-surface-1 border border-border rounded-md hover:bg-surface-3 transition-colors"
           >
-            <div className={`w-2 h-2 rounded-full bg-${laneColors[lanes.findIndex(l => l.lane === currentLane) % 4]}`} />
+            <div
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: laneColors[activeLaneIndex % 4] }}
+            />
             <span className="text-sm font-medium">{currentLane}</span>
             <ChevronDown className="w-4 h-4 text-text-muted" />
           </button>
@@ -48,7 +72,10 @@ export default function Toolbar() {
                   onClick={() => switchLane(lane.lane)}
                   className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-3 transition-colors first:rounded-t-lg"
                 >
-                  <div className={`w-2 h-2 rounded-full bg-${laneColors[index % 4]}`} />
+                  <div
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: laneColors[index % 4] }}
+                  />
                   <span className="text-sm flex-1 text-left">{lane.lane}</span>
                   {lane.lane === currentLane && (
                     <span className="text-xs text-status-success">✓</span>
@@ -93,10 +120,20 @@ export default function Toolbar() {
 
       {/* 右侧 */}
       <div className="flex items-center gap-4">
+        {workspace && (
+          <div className="hidden xl:block max-w-[360px] truncate text-xs font-mono text-text-muted">
+            {workspace}
+          </div>
+        )}
+
         <AgentStatusBadge state={agentState} />
 
-        <button className="p-1.5 hover:bg-surface-3 rounded-md transition-colors">
-          <Settings className="w-5 h-5 text-text-muted" />
+        <button
+          onClick={clearSession}
+          className="p-1.5 hover:bg-surface-3 rounded-md transition-colors"
+          title="退出工作区"
+        >
+          <LogOut className="w-5 h-5 text-text-muted" />
         </button>
       </div>
 

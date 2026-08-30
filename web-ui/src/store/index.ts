@@ -13,6 +13,7 @@ import type {
 interface AppState {
   // Session 相关
   sessionId: string | null;
+  workspace: string;
   currentLane: string;
   lanes: LanePointer[];
   agentState: AgentState;
@@ -41,6 +42,7 @@ interface AppState {
 
   // Actions
   setSession: (sessionId: string, data: any) => void;
+  clearSession: () => void;
   setCurrentLane: (lane: string) => void;
   setAgentState: (state: AgentState) => void;
   setIsRunning: (running: boolean) => void;
@@ -72,6 +74,7 @@ interface AppState {
 export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
+  workspace: '',
   currentLane: 'main',
   lanes: [],
   agentState: 'idle',
@@ -98,11 +101,39 @@ export const useStore = create<AppState>((set) => ({
   setSession: (sessionId, data) =>
     set({
       sessionId,
+      workspace: data.workspace || '',
       currentLane: data.current_lane || 'main',
       lanes: data.lanes || [],
       agentState: data.agent_state || 'idle',
       isRunning: data.is_running || false,
       entries: data.entries || [],
+      messages: [],
+      toolCalls: new Map(),
+      subagents: new Map(),
+      selectedNodeId: null,
+      permissionRequest: null,
+    }),
+
+  clearSession: () =>
+    set({
+      sessionId: null,
+      workspace: '',
+      currentLane: 'main',
+      lanes: [],
+      agentState: 'idle',
+      isRunning: false,
+      entries: [],
+      highlightedPaths: new Set(),
+      messages: [],
+      toolCalls: new Map(),
+      subagents: new Map(),
+      selectedNodeId: null,
+      showNodeDetail: false,
+      showCompareDrawer: false,
+      compareLanes: null,
+      permissionRequest: null,
+      wsConnected: false,
+      wsReconnecting: false,
     }),
 
   setCurrentLane: (lane) => set({ currentLane: lane }),

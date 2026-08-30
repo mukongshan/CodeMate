@@ -27,8 +27,8 @@ export default function Workspace({
       <div className="flex-1 flex overflow-hidden">
         {/* 左侧：树形画布 */}
         <div
-          className="border-r border-border"
-          style={{ width: `${splitRatio}%`, minWidth: '380px' }}
+          className="border-r border-border min-w-0"
+          style={{ width: `${splitRatio}%`, minWidth: '320px' }}
         >
           <TreeCanvas />
         </div>
@@ -61,7 +61,7 @@ export default function Workspace({
         />
 
         {/* 右侧：对话面板 */}
-        <div className="flex-1" style={{ minWidth: '520px' }}>
+        <div className="flex-1 min-w-0">
           <ConversationPanel sendMessage={sendMessage} />
         </div>
       </div>

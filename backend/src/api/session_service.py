@@ -10,8 +10,10 @@ session 级的，不按 Lane 分。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -194,6 +196,7 @@ class SessionRuntime:
         lanes = self.lane_manager.list_lanes()
         return {
             "session_id": self.session_id,
+            "workspace": str(self.config.workspace),
             "current_lane": self.lane_manager.current_lane,
             "agent_state": self.state.value,
             "is_running": self.is_running,
@@ -209,11 +212,15 @@ class SessionManager:
         self.config = config
         self._sessions: dict[str, SessionRuntime] = {}
 
-    def create(self, session_id: Optional[str] = None) -> SessionRuntime:
+    def create(
+        self, session_id: Optional[str] = None, workspace: Optional[str] = None
+    ) -> SessionRuntime:
         sid = session_id or uuid.uuid4().hex[:12]
         if sid in self._sessions:
             return self._sessions[sid]
-        runtime = SessionRuntime(sid, self.config)
+        runtime_config = self._config_for_session(sid, workspace)
+        self._write_meta(sid, runtime_config.workspace)
+        runtime = SessionRuntime(sid, runtime_config)
         self._sessions[sid] = runtime
         return runtime
 
@@ -225,8 +232,11 @@ class SessionManager:
         existing = self._sessions.get(session_id)
         if existing is not None:
             return existing
-        path = Path(self.config.data_dir) / f"{session_id}.jsonl"
-        if not path.exists():
+        data_dir = Path(self.config.data_dir)
+        path = data_dir / f"{session_id}.jsonl"
+        lanes_path = data_dir / f"{session_id}_lanes.jsonl"
+        meta_path = self._meta_path(session_id)
+        if not path.exists() and not lanes_path.exists() and not meta_path.exists():
             return None
         return self.create(session_id)
 
@@ -235,17 +245,33 @@ class SessionManager:
         data_dir = Path(self.config.data_dir)
         if not data_dir.exists():
             return []
-        result: list[dict] = []
-        for path in sorted(
-            data_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
-        ):
+        session_ids: set[str] = set()
+        for path in data_dir.glob("*.jsonl"):
             if path.stem.endswith("_lanes"):
                 continue
+            session_ids.add(path.stem)
+        for path in data_dir.glob("*_lanes.jsonl"):
+            session_ids.add(path.stem.removesuffix("_lanes"))
+        for path in data_dir.glob("*_meta.json"):
+            session_ids.add(path.stem.removesuffix("_meta"))
+
+        def updated_at(session_id: str) -> float:
+            candidates = [
+                data_dir / f"{session_id}.jsonl",
+                data_dir / f"{session_id}_lanes.jsonl",
+                self._meta_path(session_id),
+            ]
+            mtimes = [path.stat().st_mtime for path in candidates if path.exists()]
+            return max(mtimes) if mtimes else 0.0
+
+        result: list[dict] = []
+        for session_id in sorted(session_ids, key=updated_at, reverse=True):
             result.append(
                 {
-                    "session_id": path.stem,
-                    "updated_at": path.stat().st_mtime,
-                    "loaded": path.stem in self._sessions,
+                    "session_id": session_id,
+                    "updated_at": updated_at(session_id),
+                    "loaded": session_id in self._sessions,
+                    "workspace": str(self._workspace_for_session(session_id)),
                 }
             )
         return result
@@ -256,3 +282,45 @@ class SessionManager:
         if runtime is not None:
             runtime.storage.delete_files()
             runtime.lane_manager.delete_files()
+        self._meta_path(session_id).unlink(missing_ok=True)
+
+    def _config_for_session(
+        self, session_id: str, workspace: Optional[str] = None
+    ) -> AppConfig:
+        return replace(
+            self.config,
+            workspace=self._resolve_workspace(workspace)
+            if workspace
+            else self._workspace_for_session(session_id),
+        )
+
+    @staticmethod
+    def _resolve_workspace(workspace: str) -> Path:
+        return Path(workspace).expanduser().resolve()
+
+    def _workspace_for_session(self, session_id: str) -> Path:
+        raw_workspace = self._read_meta(session_id).get("workspace")
+        if isinstance(raw_workspace, str) and raw_workspace.strip():
+            return self._resolve_workspace(raw_workspace)
+        return self.config.workspace
+
+    def _meta_path(self, session_id: str) -> Path:
+        return Path(self.config.data_dir) / f"{session_id}_meta.json"
+
+    def _read_meta(self, session_id: str) -> dict:
+        path = self._meta_path(session_id)
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("session %s 的 meta 文件读取失败，使用默认配置", session_id)
+            return {}
+
+    def _write_meta(self, session_id: str, workspace: Path) -> None:
+        path = self._meta_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"workspace": str(workspace)}, ensure_ascii=False),
+            encoding="utf-8",
+        )

@@ -53,6 +53,7 @@ export interface WSEnvelope {
 // 会话快照
 export interface SessionSnapshot {
   session_id: string;
+  workspace: string;
   current_lane: string;
   agent_state: AgentState;
   is_running: boolean;

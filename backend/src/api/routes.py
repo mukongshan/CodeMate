@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+import os
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..errors.types import (
     CODE_LANE_NOT_FOUND,
@@ -46,8 +49,15 @@ def create_session(
     body: CreateSessionIn | None = None,
     manager: SessionManager = Depends(get_manager),
 ) -> dict:
-    runtime = manager.create(body.session_id if body else None)
-    return {"session_id": runtime.session_id, "current_lane": runtime.lane_manager.current_lane}
+    runtime = manager.create(
+        session_id=body.session_id if body else None,
+        workspace=body.workspace if body else None,
+    )
+    return {
+        "session_id": runtime.session_id,
+        "workspace": str(runtime.config.workspace),
+        "current_lane": runtime.lane_manager.current_lane,
+    }
 
 
 @router.get("/sessions")
@@ -65,6 +75,64 @@ def get_session(session_id: str, manager: SessionManager = Depends(get_manager))
 def delete_session(session_id: str, manager: SessionManager = Depends(get_manager)) -> None:
     _require_session(manager, session_id)
     manager.delete(session_id)
+
+
+# --- Filesystem ------------------------------------------------------------
+
+
+@router.get("/filesystem/roots")
+def list_filesystem_roots() -> dict:
+    roots: list[dict[str, str]] = []
+
+    if os.name == "nt":
+        for code in range(ord("A"), ord("Z") + 1):
+            root = Path(f"{chr(code)}:/")
+            if root.exists():
+                roots.append({"name": f"{chr(code)}:", "path": str(root)})
+    else:
+        roots.append({"name": "/", "path": "/"})
+
+    home = Path.home()
+    if home.exists():
+        home_path = str(home)
+        if all(item["path"] != home_path for item in roots):
+            roots.insert(0, {"name": "Home", "path": home_path})
+
+    return {"roots": roots}
+
+
+@router.get("/filesystem/children")
+def list_directory_children(path: str = Query(...)) -> dict:
+    if not path.strip():
+        raise HTTPException(status_code=400, detail="path is required")
+
+    directory = Path(path).expanduser()
+    try:
+        resolved = directory.resolve(strict=True)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail="path is not a directory")
+
+    children: list[dict[str, str]] = []
+    try:
+        candidates = sorted(resolved.iterdir(), key=lambda item: item.name.lower())
+        for child in candidates:
+            try:
+                if child.is_dir():
+                    children.append({"name": child.name, "path": str(child)})
+            except OSError:
+                continue
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    parent = resolved.parent if resolved.parent != resolved else None
+    return {
+        "path": str(resolved),
+        "parent": str(parent) if parent else None,
+        "children": children[:300],
+    }
 
 
 # --- Lane ------------------------------------------------------------------

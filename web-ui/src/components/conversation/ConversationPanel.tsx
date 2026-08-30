@@ -1,23 +1,34 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { Send } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
+import { getLaneConversation } from '../../utils/history';
 
 interface ConversationPanelProps {
   sendMessage: (content: string, lane?: string) => void;
 }
 
 export default function ConversationPanel({ sendMessage }: ConversationPanelProps) {
-  const { messages, currentLane, isRunning, toolCalls } = useStore();
+  const { entries, lanes, messages, currentLane, isRunning, toolCalls } = useStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const historyMessages = useMemo(
+    () => getLaneConversation(entries, lanes, currentLane),
+    [entries, lanes, currentLane]
+  );
+  const displayMessages = useMemo(() => {
+    if (messages.length === 0) return historyMessages;
+    const historyIds = new Set(historyMessages.map((message) => message.message_id));
+    const liveMessages = messages.filter((message) => !historyIds.has(message.message_id));
+    return [...historyMessages, ...liveMessages];
+  }, [historyMessages, messages]);
 
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [displayMessages.length, messages.at(-1)?.content]);
 
   // 自动调整 textarea 高度
   useEffect(() => {
@@ -46,7 +57,13 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
     <div className="h-full flex flex-col bg-surface-1">
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
+        {displayMessages.length === 0 && (
+          <div className="h-full flex items-center justify-center text-sm text-text-muted">
+            当前分支暂无对话
+          </div>
+        )}
+
+        {displayMessages.map((message) => (
           <div key={message.message_id}>
             <MessageBubble message={message} />
 

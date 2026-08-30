@@ -7,7 +7,7 @@ interface CreateLaneModalProps {
 }
 
 export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
-  const { sessionId, lanes, currentLane, addToast } = useStore();
+  const { sessionId, lanes, currentLane, setSession, addToast } = useStore();
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
@@ -56,6 +56,11 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
       });
 
       if (res.ok) {
+        const snapshot = await fetch(`/api/sessions/${sessionId}`);
+        const snapshotData = await snapshot.json();
+        if (snapshot.ok) {
+          setSession(sessionId!, snapshotData);
+        }
         addToast({ type: 'success', message: `已创建分支 ${name}` });
         onClose();
       } else {

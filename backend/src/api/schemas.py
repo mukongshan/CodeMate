@@ -98,6 +98,7 @@ class LaneDeletedData(BaseModel):
 
 class CreateSessionIn(BaseModel):
     session_id: Optional[str] = None
+    workspace: Optional[str] = None
 
 
 class CreateLaneIn(BaseModel):
