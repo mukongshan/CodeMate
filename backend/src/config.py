@@ -1,10 +1,4 @@
-"""配置加载。
-
-对应功能设计 06-LLM接口层 8.1 节。
-
-配置来源优先级：环境变量 > .env 文件 > 代码默认值。不引入 YAML——
-本项目的配置项少到用不上层级结构，环境变量已经够了，还省掉一个依赖。
-"""
+﻿"""Application configuration loaded from environment variables."""
 
 from __future__ import annotations
 
@@ -17,12 +11,11 @@ try:
     from dotenv import load_dotenv
 
     load_dotenv()
-except ImportError:  # pragma: no cover - dotenv 是可选依赖
+except ImportError:  # pragma: no cover
     pass
 
 
 PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    # provider -> (默认 base_url, 默认 model)
     "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
     "deepseek": ("https://api.deepseek.com", "deepseek-chat"),
 }
@@ -50,7 +43,6 @@ class LLMConfig:
             self.model = default_model
 
     def to_client_dict(self) -> dict:
-        """转成 :meth:`LLMClient.from_config` 认识的形状。"""
         return {
             "provider": self.provider,
             "api_key": self.api_key,
@@ -72,6 +64,7 @@ class AppConfig:
     workspace: Path = field(default_factory=Path.cwd)
     data_dir: Path = Path("data/sessions")
     log_dir: Path = Path("logs")
+    cors_origins: list[str] = field(default_factory=list)
     max_iterations: int = 20
     max_context_tokens: int = 8000
     host: str = "127.0.0.1"
@@ -82,16 +75,9 @@ class AppConfig:
     def from_env() -> "AppConfig":
         provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
 
-        # 先找 provider 专属的 key，再退回通用的
-        api_key = (
-            os.getenv(f"{provider.upper()}_API_KEY")
-            or os.getenv("LLM_API_KEY")
-            or ""
-        ).strip()
-
         llm = LLMConfig(
             provider=provider,
-            api_key=api_key,
+            api_key=(os.getenv("LLM_API_KEY") or "").strip(),
             base_url=(os.getenv("LLM_BASE_URL") or "").strip() or None,
             model=(os.getenv("LLM_MODEL") or "").strip(),
             temperature=_float_env("LLM_TEMPERATURE", 0.7),
@@ -106,6 +92,13 @@ class AppConfig:
             workspace=workspace,
             data_dir=Path(os.getenv("DATA_DIR", "data/sessions")),
             log_dir=Path(os.getenv("LOG_DIR", "logs")),
+            cors_origins=_list_env(
+                "CORS_ORIGINS",
+                [
+                    "http://localhost:5173",
+                    "http://127.0.0.1:5173",
+                ],
+            ),
             max_iterations=_int_env("MAX_ITERATIONS", 20),
             max_context_tokens=_int_env("MAX_CONTEXT_TOKENS", 8000),
             host=os.getenv("HOST", "127.0.0.1"),
@@ -139,3 +132,10 @@ def _bool_env(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _list_env(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    return [item.strip() for item in raw.split(",") if item.strip()]

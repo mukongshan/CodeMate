@@ -51,6 +51,11 @@ class LLMClient:
     def model(self) -> str:
         return self.provider.model
 
+    @property
+    def provider_name(self) -> str:
+        """Provider 标识。``LLMProvider`` 协议未要求 ``name``，故留兜底值。"""
+        return getattr(self.provider, "name", "unknown")
+
     async def chat(
         self,
         messages: list[Message],
@@ -129,20 +134,20 @@ class LLMClient:
 
         provider: LLMProvider
         if provider_name == "deepseek":
-            api_key = config.get("api_key") or os.getenv("DEEPSEEK_API_KEY", "")
+            api_key = config.get("api_key") or os.getenv("LLM_API_KEY", "")
             provider = DeepSeekProvider(
                 api_key=api_key,
                 model=model or "deepseek-chat",
-                base_url=config.get("base_url") or "https://api.deepseek.com",
+                base_url=config.get("base_url") or os.getenv("LLM_BASE_URL") or "https://api.deepseek.com",
                 temperature=temperature,
                 max_tokens=int(config.get("max_tokens", 4000)),
             )
         elif provider_name == "openai":
-            api_key = config.get("api_key") or os.getenv("OPENAI_API_KEY", "")
+            api_key = config.get("api_key") or os.getenv("LLM_API_KEY", "")
             provider = OpenAIProvider(
                 api_key=api_key,
                 model=model or "gpt-4o-mini",
-                base_url=config.get("base_url") or os.getenv("OPENAI_BASE_URL"),
+                base_url=config.get("base_url") or os.getenv("LLM_BASE_URL"),
                 temperature=temperature,
                 max_tokens=int(config.get("max_tokens", 2000)),
             )

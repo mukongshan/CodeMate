@@ -1,10 +1,4 @@
-"""LLM Provider 实现。
-
-对应功能设计 06-LLM接口层 4.1/4.2 节。
-
-DeepSeek 兼容 OpenAI 协议，所以只需要换 ``base_url`` 复用同一个 ``AsyncOpenAI``
-客户端，不必单独实现协议解析（06 号文档 4.2 节）。
-"""
+﻿"""LLM provider implementations."""
 
 from __future__ import annotations
 
@@ -26,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Protocol):
-    """Provider 协议。上层只依赖这个形状，不关心具体厂商。"""
-
     model: str
 
     def chat(
@@ -38,7 +30,6 @@ class LLMProvider(Protocol):
     ) -> AsyncIterator[LLMEvent]: ...
 
 
-# 可重试的 OpenAI 异常类名（06 号文档 5.1 节的分类）
 _RETRYABLE_ERROR_NAMES = {
     "RateLimitError",
     "APITimeoutError",
@@ -51,21 +42,15 @@ _RETRYABLE_ERROR_NAMES = {
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """按异常类名判断是否可重试。
-
-    用类名而不是 isinstance：openai SDK 的异常层级在不同版本间有调整，
-    按名字匹配对版本更宽容，而且和 06 号文档 5.2 节 ``should_retry`` 的写法一致。
-    """
     name = exc.__class__.__name__
     if name in _RETRYABLE_ERROR_NAMES:
         return True
-    # 5xx 一律可重试，4xx 不重试
     status = getattr(exc, "status_code", None)
     return isinstance(status, int) and status >= 500
 
 
 class OpenAIProvider:
-    """OpenAI / 任何兼容 OpenAI 协议的服务。"""
+    """OpenAI or OpenAI-compatible chat completion provider."""
 
     def __init__(
         self,
@@ -80,11 +65,11 @@ class OpenAIProvider:
 
         if not api_key:
             raise LLMAPIError(
-                message="未配置 API Key，请设置环境变量 OPENAI_API_KEY 或 DEEPSEEK_API_KEY",
+                message="未配置 API Key，请设置环境变量 LLM_API_KEY",
                 code=CODE_LLM_ERROR,
                 provider=name,
                 retryable=False,
-                suggestions=["复制 .env.example 为 .env 并填入 API Key"],
+                suggestions=["复制 .env.example 为 .env 并填写 LLM_API_KEY"],
             )
 
         client_kwargs: dict = {"api_key": api_key}
@@ -108,14 +93,11 @@ class OpenAIProvider:
             "stream": True,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            # 不加这个，流式响应的 usage 永远是 None，token 统计拿不到数
             "stream_options": {"include_usage": True},
         }
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
-        # 允许调用方覆盖（子 Agent 收尾时要传 tool_choice="none"，
-        # 所以这里不能把 tool_choice 写死）
         params.update(kwargs)
 
         buffer = StreamBuffer()
@@ -125,7 +107,6 @@ class OpenAIProvider:
         try:
             stream = await self.client.chat.completions.create(**params)
             async for chunk in stream:
-                # 带 include_usage 时最后一个 chunk 的 choices 是空列表
                 if chunk.usage is not None:
                     usage = {
                         "prompt_tokens": chunk.usage.prompt_tokens,
@@ -155,10 +136,10 @@ class OpenAIProvider:
                 if choice.finish_reason:
                     stop_reason = choice.finish_reason
 
-        except Exception as exc:  # noqa: BLE001 - 统一转成 ErrorEvent 交给重试层
+        except Exception as exc:  # noqa: BLE001
             retryable = _is_retryable(exc)
             logger.warning(
-                "LLM 调用失败 provider=%s retryable=%s: %s",
+                "LLM call failed provider=%s retryable=%s: %s",
                 self.name,
                 retryable,
                 exc,
@@ -166,7 +147,6 @@ class OpenAIProvider:
             yield ErrorEvent(message=f"{exc.__class__.__name__}: {exc}", retryable=retryable)
             return
 
-        # 参数拼接完成后再一次性下发工具调用事件
         for call in buffer.get_complete_tool_calls():
             yield ToolCallEvent(
                 id=call["id"], name=call["name"], arguments=call["arguments"]
@@ -176,7 +156,7 @@ class OpenAIProvider:
 
 
 class DeepSeekProvider(OpenAIProvider):
-    """DeepSeek。兼容 OpenAI 协议，只换 base_url 和默认模型。"""
+    """DeepSeek provider using its OpenAI-compatible API."""
 
     def __init__(
         self,

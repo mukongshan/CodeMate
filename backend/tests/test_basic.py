@@ -171,7 +171,7 @@ class TestConfig:
     def test_from_env_defaults(self, monkeypatch):
         """测试默认配置。"""
         monkeypatch.delenv("LLM_PROVIDER", raising=False)
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
 
         config = AppConfig.from_env()
 
@@ -183,7 +183,7 @@ class TestConfig:
     def test_from_env_with_api_key(self, monkeypatch):
         """测试从环境变量加载 API Key。"""
         monkeypatch.setenv("LLM_PROVIDER", "deepseek")
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key-12345")
+        monkeypatch.setenv("LLM_API_KEY", "test-key-12345")
 
         config = AppConfig.from_env()
 
