@@ -73,11 +73,15 @@ class SessionStorage:
     """单个 session 的树形历史：内存索引 + JSONL 落盘。"""
 
     def __init__(
-        self, session_id: str, data_dir: Path | str = DEFAULT_DATA_DIR
+        self,
+        session_id: str,
+        data_dir: Path | str = DEFAULT_DATA_DIR,
+        *,
+        path: Path | str | None = None,
     ) -> None:
         self.session_id = session_id
         self.data_dir = Path(data_dir)
-        self.path = self.data_dir / f"{session_id}.jsonl"
+        self.path = Path(path) if path is not None else self.data_dir / f"{session_id}.jsonl"
 
         self._entries: dict[str, Entry] = {}
         self._children_index: dict[str, list[str]] = defaultdict(list)
@@ -85,7 +89,7 @@ class SessionStorage:
         self._next_seq = 1
         self._write_lock = asyncio.Lock()
 
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._load()
 
     # --- 加载 ---------------------------------------------------------------

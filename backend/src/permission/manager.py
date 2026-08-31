@@ -19,12 +19,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from ..config import DEFAULT_COMMAND_BLACKLIST
 from .rules import (
     inspect_command_safety,
-    is_command_allowlisted,
+    is_command_blacklisted,
     is_safe_path,
     is_system_path,
-    normalize_command_allowlist,
+    normalize_command_blacklist,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,8 +90,8 @@ class PermissionManager:
     def __init__(self, workspace: str | Path, config: Optional[dict] = None) -> None:
         self.workspace = str(Path(workspace).expanduser().resolve())
         self.config = config or {}
-        self.command_allowlist = normalize_command_allowlist(
-            self.config.get("command_allowlist", ())
+        self.command_blacklist = normalize_command_blacklist(
+            self.config.get("command_blacklist", DEFAULT_COMMAND_BLACKLIST)
         )
         self.auto_approved: set[str] = set()
         self.denied: set[str] = set()
@@ -125,6 +126,8 @@ class PermissionManager:
     ) -> PermissionDecision:
         if fingerprint in self.denied:
             return PermissionDecision(allowed=False, reason="用户之前拒绝了此操作")
+        if level is PermissionLevel.DANGEROUS:
+            return await self._check_dangerous(tool_name, args, fingerprint)
         if fingerprint in self.auto_approved:
             return PermissionDecision(
                 allowed=True, reason="自动批准（用户之前选择总是允许）", auto_approved=True
@@ -168,14 +171,29 @@ class PermissionManager:
     async def _check_dangerous(
         self, tool_name: str, args: dict, fingerprint: str
     ) -> PermissionDecision:
-        """DANGEROUS 级：黑名单硬拒绝，其余一律需要用户确认。"""
+        """DANGEROUS 级：命中黑名单拒绝，其余安全命令自动放行。"""
         command = args.get("command") or ""
 
         safe, safety_reason = inspect_command_safety(command, self.workspace)
-        if safe and is_command_allowlisted(command, self.command_allowlist):
+        blacklisted, blacklist_reason = is_command_blacklisted(
+            command, self.command_blacklist
+        )
+        if blacklisted:
+            return PermissionDecision(
+                allowed=False,
+                reason=f"命令命中黑名单：{blacklist_reason}",
+            )
+        if safe:
             return PermissionDecision(
                 allowed=True,
-                reason="命令在白名单内且通过安全检查",
+                reason="命令未命中黑名单且通过安全检查",
+                auto_approved=True,
+            )
+
+        if fingerprint in self.auto_approved:
+            return PermissionDecision(
+                allowed=True,
+                reason="自动批准（用户之前选择总是允许）",
                 auto_approved=True,
             )
 
@@ -191,13 +209,14 @@ class PermissionManager:
             fingerprint=fingerprint,
         )
 
-    def get_command_allowlist(self) -> list[str]:
-        return list(self.command_allowlist)
+    def get_command_blacklist(self) -> list[str]:
+        return list(self.command_blacklist)
 
-    def set_command_allowlist(self, commands: list[str]) -> list[str]:
-        self.command_allowlist = normalize_command_allowlist(commands)
-        self.config["command_allowlist"] = list(self.command_allowlist)
-        return self.get_command_allowlist()
+    def set_command_blacklist(self, commands: list[str]) -> list[str]:
+        self.command_blacklist = normalize_command_blacklist(commands)
+        self.config["command_blacklist"] = list(self.command_blacklist)
+        return self.get_command_blacklist()
+
 
     async def _ask_user(
         self,

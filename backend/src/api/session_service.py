@@ -28,6 +28,7 @@ from ..observability.logger import StructuredLogger
 from ..permission.manager import PermissionManager, normalize_risk_level
 from ..storage.lane_manager import LaneManager
 from ..storage.session_storage import SessionStorage
+from ..storage.workspace_storage import SessionPaths, WorkspaceRecord, WorkspaceStorage
 from ..tools.registry import ToolRegistry
 from ..tools.subagent_tool import DelegateTaskTool
 from ..version_control import GitLaneManager
@@ -44,21 +45,41 @@ class SessionBusyError(RuntimeError):
 class SessionRuntime:
     """单个会话的完整运行时。"""
 
-    def __init__(self, session_id: str, config: AppConfig) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        config: AppConfig,
+        *,
+        paths: SessionPaths | None = None,
+        workspace_id: str | None = None,
+        title: str | None = None,
+    ) -> None:
         self.session_id = session_id
         self.config = config
-        self.storage = SessionStorage(session_id, config.data_dir)
-        self.lane_manager = LaneManager(session_id, config.data_dir)
+        self.paths = paths
+        self.workspace_id = workspace_id
+        self.title = title or session_id
+        self.storage = SessionStorage(
+            session_id,
+            config.data_dir,
+            path=paths.entries if paths is not None else None,
+        )
+        self.lane_manager = LaneManager(
+            session_id,
+            config.data_dir,
+            path=paths.lanes if paths is not None else None,
+        )
         self.git_manager = GitLaneManager(
             session_id=session_id,
             source_workspace=config.workspace,
-            data_dir=config.data_dir,
+            data_dir=paths.git_dir if paths is not None else config.data_dir,
             worktree_root=config.worktree_root,
             max_file_bytes=config.checkpoint_max_file_bytes,
             checkpoint_merge_window_seconds=config.checkpoint_merge_window_seconds,
             checkpoint_max_pending_runs=config.checkpoint_max_pending_runs,
             checkpoint_max_pending_files=config.checkpoint_max_pending_files,
             checkpoint_max_pending_seconds=config.checkpoint_max_pending_seconds,
+            session_layout=paths is not None,
         )
         if self.git_manager.enabled:
             for pointer in self.lane_manager.list_lanes():
@@ -67,11 +88,13 @@ class SessionRuntime:
             self.git_manager.reconcile_operations(
                 {pointer.lane for pointer in self.lane_manager.list_lanes()}
             )
-        self.log = StructuredLogger(session_id, config.log_dir)
+        self.log = StructuredLogger(
+            session_id, paths.logs_dir if paths is not None else config.log_dir
+        )
         active_workspace = self.workspace_for_lane(self.lane_manager.current_lane)
         self.permission_manager = PermissionManager(
             workspace=active_workspace,
-            config={"command_allowlist": config.command_allowlist},
+            config={"command_blacklist": config.command_blacklist},
         )
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
         self._run_lock = asyncio.Lock()
@@ -606,6 +629,8 @@ class SessionRuntime:
         lanes = self.lane_manager.list_active_lanes()
         return {
             "session_id": self.session_id,
+            "workspace_id": self.workspace_id,
+            "title": self.title,
             "workspace": str(self.workspace_for_lane(self.lane_manager.current_lane)),
             "source_workspace": str(self.config.workspace),
             "git_enabled": self.git_manager.enabled,
@@ -617,30 +642,58 @@ class SessionRuntime:
             "current_lane": self.lane_manager.current_lane,
             "agent_state": self.state.value,
             "is_running": self.is_running,
-            "command_allowlist": self.permission_manager.get_command_allowlist(),
+            "command_blacklist": self.permission_manager.get_command_blacklist(),
             "lanes": [self.lane_payload(lane.lane) for lane in lanes],
             "entries": [entry.to_api_dict() for entry in self.storage.all_entries()],
         }
 
 
 class SessionManager:
-    """进程内的 session 注册表。"""
+    """进程内 Session 注册表与持久化 Workspace 管理入口。"""
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self._sessions: dict[str, SessionRuntime] = {}
+        self.workspace_storage = WorkspaceStorage(config.data_dir)
+        migrated = self.workspace_storage.migrate_legacy_sessions(config.workspace)
+        if migrated:
+            logger.info("已迁移 %d 个旧扁平 Session", migrated)
 
     def create(
-        self, session_id: Optional[str] = None, workspace: Optional[str] = None
+        self,
+        session_id: Optional[str] = None,
+        workspace: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        title: Optional[str] = None,
     ) -> SessionRuntime:
         sid = session_id or uuid.uuid4().hex[:12]
         if sid in self._sessions:
             return self._sessions[sid]
-        runtime_config = self._config_for_session(sid, workspace)
-        self._write_meta(
-            sid, runtime_config.workspace, runtime_config.command_allowlist
-        )
-        runtime = SessionRuntime(sid, runtime_config)
+        existing_paths = self.workspace_storage.find_session(sid)
+        if existing_paths is not None:
+            loaded = self.get_or_load(sid)
+            if loaded is not None:
+                return loaded
+        workspace_record = self._resolve_workspace_record(workspace, workspace_id)
+        paths = self.workspace_storage.session_paths(workspace_record.workspace_id, sid)
+        now = time.time()
+        meta = {
+            "session_id": sid,
+            "workspace_id": workspace_record.workspace_id,
+            "workspace": workspace_record.path,
+            "title": (title or sid).strip() or sid,
+            "created_at": now,
+            "updated_at": now,
+            "command_blacklist": list(self.config.command_blacklist),
+        }
+        self.workspace_storage.write_session_meta(paths, meta)
+        self.workspace_storage.attach_session(workspace_record.workspace_id, sid)
+        try:
+            runtime = self._build_runtime(paths, meta, workspace_record)
+        except Exception:
+            self.workspace_storage.detach_session(workspace_record.workspace_id, sid)
+            self.workspace_storage.delete_session_directory(paths)
+            raise
         self._sessions[sid] = runtime
         return runtime
 
@@ -652,54 +705,183 @@ class SessionManager:
         existing = self._sessions.get(session_id)
         if existing is not None:
             return existing
-        data_dir = Path(self.config.data_dir)
-        path = data_dir / f"{session_id}.jsonl"
-        lanes_path = data_dir / f"{session_id}_lanes.jsonl"
-        meta_path = self._meta_path(session_id)
-        if not path.exists() and not lanes_path.exists() and not meta_path.exists():
+        paths = self.workspace_storage.find_session(session_id)
+        if paths is None:
             return None
-        return self.create(session_id)
+        meta = self.workspace_storage.read_session_meta(paths)
+        workspace = self.workspace_storage.get_workspace(paths.workspace_id)
+        if workspace is None:
+            return None
+        runtime = self._build_runtime(paths, meta, workspace)
+        self._sessions[session_id] = runtime
+        return runtime
 
-    def list_sessions(self) -> list[dict]:
-        """列出磁盘上的所有 session。"""
-        data_dir = Path(self.config.data_dir)
-        if not data_dir.exists():
-            return []
-        session_ids: set[str] = set()
-        for path in data_dir.glob("*.jsonl"):
-            if path.stem.endswith("_lanes"):
-                continue
-            session_ids.add(path.stem)
-        for path in data_dir.glob("*_lanes.jsonl"):
-            session_ids.add(path.stem.removesuffix("_lanes"))
-        for path in data_dir.glob("*_meta.json"):
-            session_ids.add(path.stem.removesuffix("_meta"))
-
-        def updated_at(session_id: str) -> float:
-            candidates = [
-                data_dir / f"{session_id}.jsonl",
-                data_dir / f"{session_id}_lanes.jsonl",
-                self._meta_path(session_id),
-            ]
-            mtimes = [path.stat().st_mtime for path in candidates if path.exists()]
-            return max(mtimes) if mtimes else 0.0
-
+    def list_sessions(self, workspace_id: Optional[str] = None) -> list[dict]:
+        """按工作区注册表列出 Session，物理目录不再全局扫描。"""
+        workspaces = (
+            [self.workspace_storage.require_workspace(workspace_id)]
+            if workspace_id is not None
+            else self.workspace_storage.list_workspaces()
+        )
         result: list[dict] = []
-        for session_id in sorted(session_ids, key=updated_at, reverse=True):
-            result.append(
-                {
-                    "session_id": session_id,
-                    "updated_at": updated_at(session_id),
-                    "loaded": session_id in self._sessions,
-                    "workspace": str(self._workspace_for_session(session_id)),
-                }
-            )
+        for workspace in workspaces:
+            for session_id in workspace.session_ids:
+                paths = self.workspace_storage.session_paths(
+                    workspace.workspace_id, session_id
+                )
+                meta = self.workspace_storage.read_session_meta(paths)
+                if meta.get("workspace_id") != workspace.workspace_id:
+                    continue
+                result.append(self._session_summary(workspace, paths, meta))
+        result.sort(key=lambda item: item["updated_at"], reverse=True)
         return result
 
     def delete(self, session_id: str) -> None:
-        """删除 session：从内存移除 + 删除磁盘文件。"""
+        """删除 Session 目录以及所有非 main Lane 的托管 Git 资源。"""
+        paths = self.workspace_storage.find_session(session_id)
+        if paths is None:
+            raise KeyError(session_id)
+        operation_id = f"delete-session-{uuid.uuid4().hex}"
+        journal = self.workspace_storage.write_deletion_journal(
+            operation_id,
+            {
+                "operation_id": operation_id,
+                "operation": "delete_session",
+                "session_id": session_id,
+                "workspace_id": paths.workspace_id,
+                "state": "prepared",
+                "updated_at": time.time(),
+            },
+        )
+        runtime = self.get_or_load(session_id)
+        try:
+            if runtime is not None:
+                runtime.cancel_checkpoint_flushes()
+                runtime.git_manager.delete_managed_resources()
+                self._sessions.pop(session_id, None)
+            self.workspace_storage.write_deletion_journal(
+                operation_id,
+                {
+                    "operation_id": operation_id,
+                    "operation": "delete_session",
+                    "session_id": session_id,
+                    "workspace_id": paths.workspace_id,
+                    "state": "git_cleaned",
+                    "updated_at": time.time(),
+                },
+            )
+            self.workspace_storage.delete_session_directory(paths)
+            self.workspace_storage.detach_session(paths.workspace_id, session_id)
+            journal.unlink(missing_ok=True)
+        except Exception as exc:
+            self.workspace_storage.write_deletion_journal(
+                operation_id,
+                {
+                    "operation_id": operation_id,
+                    "operation": "delete_session",
+                    "session_id": session_id,
+                    "workspace_id": paths.workspace_id,
+                    "state": "failed",
+                    "error": str(exc),
+                    "updated_at": time.time(),
+                },
+            )
+            raise
+
+    def list_workspaces(self) -> list[dict]:
+        return [self._workspace_payload(item) for item in self.workspace_storage.list_workspaces()]
+
+    def create_workspace(self, path: str, title: Optional[str] = None) -> tuple[dict, bool]:
+        record, created = self.workspace_storage.create_workspace(path, title)
+        return self._workspace_payload(record), created
+
+    def rename_workspace(self, workspace_id: str, title: str) -> dict:
+        return self._workspace_payload(
+            self.workspace_storage.rename_workspace(workspace_id, title)
+        )
+
+    def delete_workspace(self, workspace_id: str, cascade: bool = False) -> None:
+        workspace = self.workspace_storage.require_workspace(workspace_id)
+        if workspace.session_ids and not cascade:
+            raise ValueError("工作区仍包含会话，请确认级联删除")
+        if cascade:
+            for session_id in list(workspace.session_ids):
+                self.delete(session_id)
+        self.workspace_storage.remove_workspace(workspace_id)
+
+    def rename_session(self, session_id: str, title: str) -> dict:
+        paths = self.workspace_storage.find_session(session_id)
+        if paths is None:
+            raise KeyError(session_id)
+        normalized = title.strip()
+        if not normalized:
+            raise ValueError("会话名称不能为空")
+        meta = self.workspace_storage.read_session_meta(paths)
+        meta["title"] = normalized
+        meta["updated_at"] = time.time()
+        self.workspace_storage.write_session_meta(paths, meta)
         runtime = self._sessions.get(session_id)
         if runtime is not None:
+            runtime.title = normalized
+        workspace = self.workspace_storage.require_workspace(paths.workspace_id)
+        return self._session_summary(workspace, paths, meta)
+
+    def _resolve_workspace_record(
+        self, workspace: Optional[str], workspace_id: Optional[str]
+    ) -> WorkspaceRecord:
+        if workspace_id is not None:
+            record = self.workspace_storage.require_workspace(workspace_id)
+            if workspace is not None and Path(workspace).expanduser().resolve() != Path(record.path):
+                raise ValueError("workspace_id 与 workspace 路径不一致")
+            return record
+        record, _ = self.workspace_storage.create_workspace(
+            workspace or self.config.workspace
+        )
+        return record
+
+    def _build_runtime(
+        self, paths: SessionPaths, meta: dict, workspace: WorkspaceRecord
+    ) -> SessionRuntime:
+        raw_blacklist = meta.get("command_blacklist")
+        runtime_config = replace(
+            self.config,
+            workspace=Path(workspace.path),
+            command_blacklist=(
+                [str(item) for item in raw_blacklist if str(item).strip()]
+                if isinstance(raw_blacklist, list)
+                else list(self.config.command_blacklist)
+            ),
+        )
+        return SessionRuntime(
+            paths.session_id,
+            runtime_config,
+            paths=paths,
+            workspace_id=workspace.workspace_id,
+            title=str(meta.get("title") or paths.session_id),
+        )
+
+    def _workspace_payload(self, workspace: WorkspaceRecord) -> dict:
+        return {
+            **workspace.to_dict(),
+            "session_count": len(workspace.session_ids),
+            "status": "ok" if Path(workspace.path).is_dir() else "missing-dir",
+        }
+
+    def _session_summary(
+        self, workspace: WorkspaceRecord, paths: SessionPaths, meta: dict
+    ) -> dict:
+        return {
+            "session_id": paths.session_id,
+            "workspace_id": workspace.workspace_id,
+            "title": str(meta.get("title") or paths.session_id),
+            "updated_at": max(
+                float(meta.get("updated_at", 0.0)),
+                self.workspace_storage.session_updated_at(paths),
+            ),
+            "created_at": float(meta.get("created_at", 0.0)),
+            "loaded": paths.session_id in self._sessions,
+            "workspace": workspace.path,
+        }
             runtime.cancel_checkpoint_flushes()
             runtime.git_manager.close_worktrees()
             runtime.storage.delete_files()
@@ -708,69 +890,17 @@ class SessionManager:
             self._sessions.pop(session_id, None)
         self._meta_path(session_id).unlink(missing_ok=True)
 
-    def _config_for_session(
-        self, session_id: str, workspace: Optional[str] = None
-    ) -> AppConfig:
-        meta = self._read_meta(session_id)
-        raw_allowlist = meta.get("command_allowlist")
-        return replace(
-            self.config,
-            workspace=self._resolve_workspace(workspace)
-            if workspace
-            else self._workspace_for_session(session_id),
-            command_allowlist=(
-                [str(item) for item in raw_allowlist if str(item).strip()]
-                if isinstance(raw_allowlist, list)
-                else list(self.config.command_allowlist)
-            ),
-        )
-
-    @staticmethod
-    def _resolve_workspace(workspace: str) -> Path:
-        return Path(workspace).expanduser().resolve()
-
-    def _workspace_for_session(self, session_id: str) -> Path:
-        raw_workspace = self._read_meta(session_id).get("workspace")
-        if isinstance(raw_workspace, str) and raw_workspace.strip():
-            return self._resolve_workspace(raw_workspace)
-        return self.config.workspace
-
-    def _meta_path(self, session_id: str) -> Path:
-        return Path(self.config.data_dir) / f"{session_id}_meta.json"
-
-    def _read_meta(self, session_id: str) -> dict:
-        path = self._meta_path(session_id)
-        if not path.exists():
-            return {}
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("session %s 的 meta 文件读取失败，使用默认配置", session_id)
-            return {}
-
-    def _write_meta(
-        self, session_id: str, workspace: Path, command_allowlist: list[str] | None = None
-    ) -> None:
-        path = self._meta_path(session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "workspace": str(workspace),
-            "command_allowlist": command_allowlist
-            if command_allowlist is not None
-            else list(self.config.command_allowlist),
-        }
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    def update_command_allowlist(
+    def update_command_blacklist(
         self, session_id: str, commands: list[str]
     ) -> SessionRuntime:
         runtime = self.get_or_load(session_id)
         if runtime is None:
             raise KeyError(session_id)
-        normalized = runtime.permission_manager.set_command_allowlist(commands)
-        runtime.config = replace(runtime.config, command_allowlist=normalized)
-        self._write_meta(session_id, runtime.config.workspace, normalized)
+        normalized = runtime.permission_manager.set_command_blacklist(commands)
+        runtime.config = replace(runtime.config, command_blacklist=normalized)
+        if runtime.paths is not None:
+            meta = self.workspace_storage.read_session_meta(runtime.paths)
+            meta["command_blacklist"] = normalized
+            meta["updated_at"] = time.time()
+            self.workspace_storage.write_session_meta(runtime.paths, meta)
         return runtime

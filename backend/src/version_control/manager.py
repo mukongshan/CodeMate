@@ -50,10 +50,13 @@ class GitLaneManager:
         checkpoint_max_pending_runs: int = 10,
         checkpoint_max_pending_files: int = 20,
         checkpoint_max_pending_seconds: float = 1800.0,
+        session_layout: bool = False,
     ) -> None:
         self.session_id = session_id
         self.source_workspace = Path(source_workspace).expanduser().resolve()
-        self.store = LaneGitStore(session_id, data_dir)
+        self.store = LaneGitStore(
+            session_id, data_dir, session_layout=session_layout
+        )
         self.worktree_root = Path(worktree_root).expanduser().resolve()
         self.max_file_bytes = max_file_bytes
         self.checkpoint_merge_window_seconds = max(0.0, checkpoint_merge_window_seconds)

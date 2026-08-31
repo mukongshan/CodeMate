@@ -7,15 +7,15 @@ interface PermissionGateModalProps {
 }
 
 export default function PermissionGateModal({ onClose }: PermissionGateModalProps) {
-  const { sessionId, commandAllowlist, setCommandAllowlist } = useStore();
-  const [commands, setCommands] = useState(commandAllowlist);
+  const { sessionId, commandBlacklist, setCommandBlacklist } = useStore();
+  const [commands, setCommands] = useState(commandBlacklist);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setCommands(commandAllowlist);
-  }, [commandAllowlist]);
+    setCommands(commandBlacklist);
+  }, [commandBlacklist]);
 
   const addCommand = () => {
     const command = draft.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -32,13 +32,13 @@ export default function PermissionGateModal({ onClose }: PermissionGateModalProp
       const response = await fetch(`/api/sessions/${sessionId}/permissions/gate`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command_allowlist: commands }),
+        body: JSON.stringify({ command_blacklist: commands }),
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.detail || `保存失败: HTTP ${response.status}`);
       }
-      setCommandAllowlist(data.command_allowlist || []);
+      setCommandBlacklist(data.command_blacklist || []);
       onClose();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : '保存失败');
@@ -91,7 +91,7 @@ export default function PermissionGateModal({ onClose }: PermissionGateModalProp
           <div className="max-h-64 space-y-1 overflow-auto">
             {commands.length === 0 ? (
               <div className="py-8 text-center text-sm text-text-muted">
-                当前没有白名单命令
+            当前没有黑名单命令
               </div>
             ) : (
               commands.map((command) => (

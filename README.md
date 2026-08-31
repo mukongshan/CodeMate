@@ -110,7 +110,7 @@ npm run dev
 - **SAFE**（自动放行）：只读操作
 - **WRITE**（workspace 内自动放行）：工作目录内的写操作
 - **DANGEROUS**（需用户确认）：危险操作或 workspace 外的修改
-- 命令工具支持 session 级白名单；白名单命令仍会先经过危险模式、命令替换和 workspace 路径安全检查
+- 命令工具支持 session 级黑名单；未命中黑名单且通过命令替换、危险模式和 workspace 路径检查的命令自动放行
 
 ### 5. 子 Agent 系统
 将子任务委托给独立上下文的只读 Agent：
@@ -153,7 +153,7 @@ npm run dev
 - `DELETE /api/sessions/{id}/lanes/{lane}` - 删除分支
 - `GET /api/sessions/{id}/lanes/compare` - 对比分支
 - `GET /api/sessions/{id}/permissions/gate` - 查看命令工具门禁
-- `PUT /api/sessions/{id}/permissions/gate` - 更新命令白名单
+- `PUT /api/sessions/{id}/permissions/gate` - 更新命令黑名单
 
 ### WebSocket
 - `ws://localhost:8000/ws/{session_id}` - 实时事件推送

@@ -71,17 +71,25 @@ class LaneManager:
     """Lane 指针管理：append-only 流水 + 重放取最新。"""
 
     def __init__(
-        self, session_id: str, data_dir: Path | str = DEFAULT_DATA_DIR
+        self,
+        session_id: str,
+        data_dir: Path | str = DEFAULT_DATA_DIR,
+        *,
+        path: Path | str | None = None,
     ) -> None:
         self.session_id = session_id
         self.data_dir = Path(data_dir)
-        self.path = self.data_dir / f"{session_id}_lanes.jsonl"
+        self.path = (
+            Path(path)
+            if path is not None
+            else self.data_dir / f"{session_id}_lanes.jsonl"
+        )
         self._lanes: dict[str, LanePointer] = {}
         # 当前活跃分支。功能设计文档没规定它存哪儿，这里跟 Lane 流水存一起
         # （写一条 {"current_lane": ...} 记录），这样重启后能回到用户离开时的分支。
         self._current_lane: str = MAIN_LANE
 
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._load()
 
         # 每个 session 至少有 main 分支。新建 session 时 leaf_id 为 None——

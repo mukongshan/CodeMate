@@ -124,7 +124,7 @@ class PublishLaneIn(BaseModel):
 
 
 class UpdatePermissionGateIn(BaseModel):
-    command_allowlist: list[str] = Field(default_factory=list)
+    command_blacklist: list[str] = Field(default_factory=list)
 
 
 # --- REST 错误响应 ----------------------------------------------------------

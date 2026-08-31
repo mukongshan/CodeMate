@@ -7,12 +7,23 @@ from .models import CodeCheckpoint, LaneCodeBinding
 
 
 class LaneGitStore:
-    def __init__(self, session_id: str, data_dir: Path | str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        data_dir: Path | str,
+        *,
+        session_layout: bool = False,
+    ) -> None:
         root = Path(data_dir)
         root.mkdir(parents=True, exist_ok=True)
-        self.binding_path = root / f"{session_id}_git_bindings.json"
-        self.checkpoint_path = root / f"{session_id}_checkpoints.ndjson"
-        self.operation_path = root / f"{session_id}_operations.ndjson"
+        if session_layout:
+            self.binding_path = root / "bindings.json"
+            self.checkpoint_path = root / "checkpoints.ndjson"
+            self.operation_path = root / "operations.ndjson"
+        else:
+            self.binding_path = root / f"{session_id}_git_bindings.json"
+            self.checkpoint_path = root / f"{session_id}_checkpoints.ndjson"
+            self.operation_path = root / f"{session_id}_operations.ndjson"
         self.bindings: dict[str, LaneCodeBinding] = {}
         self._load()
 

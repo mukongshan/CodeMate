@@ -130,8 +130,8 @@ def is_dangerous_command(command: str) -> tuple[bool, str]:
     return False, ""
 
 
-def normalize_command_allowlist(commands: Iterable[str] | None) -> tuple[str, ...]:
-    """Normalize configured command names/prefixes while preserving their order."""
+def normalize_command_blacklist(commands: Iterable[str] | None) -> tuple[str, ...]:
+    """Normalize blocked command names/prefixes while preserving their order."""
     if not commands:
         return ()
     result: list[str] = []
@@ -218,11 +218,48 @@ def is_command_allowlisted(
         return False
     if "$(" in command or "`" in command:
         return False
-    normalized = normalize_command_allowlist(allowlist)
+    normalized = normalize_command_blacklist(allowlist)
     segments = _command_segments(tokens)
     return bool(segments) and all(
         _allowlist_matches(segment, normalized) for segment in segments
     )
+
+
+def _blacklist_matches(segment: list[str], blacklist: tuple[str, ...]) -> str | None:
+    command_name = _segment_command_name(segment)
+    if not command_name:
+        return None
+
+    command_tokens = [
+        token.lower()
+        for token in segment
+        if token not in {">", ">>", ">|", "<", "<<", "&>", "&>>"}
+    ]
+    for entry in blacklist:
+        entry_tokens = entry.split()
+        if len(entry_tokens) == 1 and entry_tokens[0] == command_name:
+            return entry
+        if command_tokens[: len(entry_tokens)] == entry_tokens:
+            return entry
+    return None
+
+
+def is_command_blacklisted(
+    command: str, blacklist: Iterable[str] | None
+) -> tuple[bool, str]:
+    """Return whether any simple command in a shell expression is blocked."""
+    tokens = _shell_tokens(command)
+    if tokens is None or not tokens:
+        return True, "命令语法无法安全解析"
+    if "$(" in command or "`" in command:
+        return True, "命令替换"
+
+    normalized = normalize_command_blacklist(blacklist)
+    for segment in _command_segments(tokens):
+        matched = _blacklist_matches(segment, normalized)
+        if matched:
+            return True, matched
+    return False, ""
 
 
 def _command_path(path: str, workspace: str | Path) -> str:

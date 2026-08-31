@@ -391,7 +391,7 @@ def permission_gate(
 ) -> dict:
     runtime = _require_session(manager, session_id)
     return {
-        "command_allowlist": runtime.permission_manager.get_command_allowlist()
+        "command_blacklist": runtime.permission_manager.get_command_blacklist()
     }
 
 
@@ -402,9 +402,9 @@ def update_permission_gate(
     manager: SessionManager = Depends(get_manager),
 ) -> dict:
     runtime = _require_session(manager, session_id)
-    runtime = manager.update_command_allowlist(
-        session_id, body.command_allowlist
+    runtime = manager.update_command_blacklist(
+        session_id, body.command_blacklist
     )
     return {
-        "command_allowlist": runtime.permission_manager.get_command_allowlist()
+        "command_blacklist": runtime.permission_manager.get_command_blacklist()
     }

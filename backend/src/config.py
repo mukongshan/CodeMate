@@ -21,58 +21,21 @@ PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "deepseek": ("https://api.deepseek.com", "deepseek-chat"),
 }
 
-DEFAULT_COMMAND_ALLOWLIST = [
-    "pwd",
-    "ls",
-    "dir",
-    "tree",
-    "cat",
-    "head",
-    "tail",
-    "echo",
-    "printf",
-    "true",
-    "false",
-    "grep",
-    "rg",
-    "find",
-    "file",
-    "stat",
-    "wc",
-    "sort",
-    "uniq",
-    "cut",
-    "tr",
-    "diff",
-    "cmp",
-    "which",
-    "command",
-    "type",
-    "uname",
-    "date",
-    "du",
-    "df",
-    "git status",
-    "git diff",
-    "git log",
-    "git show",
-    "git branch --list",
-    "git branch --show-current",
-    "git branch -a",
-    "git branch -r",
-    "git tag --list",
-    "git tag -l",
-    "git remote -v",
-    "git remote --verbose",
-    "git remote get-url",
-    "git rev-parse",
-    "git ls-files",
-    "git blame",
-    "git describe",
-    "git shortlog",
-    "git config --get",
-    "git config --list",
-    "git check-ignore",
+DEFAULT_COMMAND_BLACKLIST = [
+    "rm",
+    "mkfs",
+    "format",
+    "dd",
+    "chmod -R 777",
+    "chown -R",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "diskpart",
+    "bcdedit",
+    "git push",
+    "git reset --hard",
 ]
 
 
@@ -126,8 +89,8 @@ class AppConfig:
     checkpoint_max_pending_runs: int = 10
     checkpoint_max_pending_files: int = 20
     checkpoint_max_pending_seconds: float = 1800.0
-    command_allowlist: list[str] = field(
-        default_factory=lambda: list(DEFAULT_COMMAND_ALLOWLIST)
+    command_blacklist: list[str] = field(
+        default_factory=lambda: list(DEFAULT_COMMAND_BLACKLIST)
     )
     cors_origins: list[str] = field(default_factory=list)
     max_iterations: int = 20
@@ -175,9 +138,9 @@ class AppConfig:
             checkpoint_max_pending_seconds=_float_env(
                 "CHECKPOINT_MAX_PENDING_SECONDS", 1800.0
             ),
-            command_allowlist=_list_env(
-                "COMMAND_ALLOWLIST",
-                list(DEFAULT_COMMAND_ALLOWLIST),
+            command_blacklist=_list_env(
+                "COMMAND_BLACKLIST",
+                list(DEFAULT_COMMAND_BLACKLIST),
             ),
             cors_origins=_list_env(
                 "CORS_ORIGINS",

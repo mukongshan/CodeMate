@@ -571,17 +571,17 @@ class TestPermissionAPI:
     def test_permission_gate_can_be_read_and_updated(self, client, session_id):
         response = client.get(f"/api/sessions/{session_id}/permissions/gate")
         assert response.status_code == 200
-        assert "ls" in response.json()["command_allowlist"]
+        assert "git push" in response.json()["command_blacklist"]
 
         response = client.put(
             f"/api/sessions/{session_id}/permissions/gate",
-            json={"command_allowlist": [" Echo ", "git status", "echo"]},
+            json={"command_blacklist": [" Echo ", "git status", "echo"]},
         )
         assert response.status_code == 200
-        assert response.json()["command_allowlist"] == ["echo", "git status"]
+        assert response.json()["command_blacklist"] == ["echo", "git status"]
 
         detail = client.get(f"/api/sessions/{session_id}").json()
-        assert detail["command_allowlist"] == ["echo", "git status"]
+        assert detail["command_blacklist"] == ["echo", "git status"]
 
 
 class TestWebSocketEndpoint:

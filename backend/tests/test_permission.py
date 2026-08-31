@@ -4,11 +4,11 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from src.config import DEFAULT_COMMAND_ALLOWLIST
+from src.config import DEFAULT_COMMAND_BLACKLIST
 from src.permission.manager import PermissionManager, PermissionLevel
 from src.permission.rules import (
     inspect_command_safety,
-    is_command_allowlisted,
+    is_command_blacklisted,
     is_safe_path,
     is_dangerous_command,
     is_system_path,
@@ -49,26 +49,33 @@ class TestPermissionRules:
         dangerous, _ = is_dangerous_command("ls -la")
         assert not dangerous
 
-    def test_command_allowlist_matches_simple_commands_and_prefixes(self):
-        allowlist = ["ls", "git status", "python"]
+    def test_command_blacklist_matches_any_simple_command(self):
+        blacklist = ["rm", "git push", "python -c"]
 
-        assert is_command_allowlisted("ls -la", allowlist)
-        assert is_command_allowlisted("git status --short", allowlist)
-        assert is_command_allowlisted("ls && git status", allowlist)
-        assert not is_command_allowlisted("ls && rm -rf output", allowlist)
-        assert not is_command_allowlisted("python -c 'print(1)' | sh", allowlist)
+        assert is_command_blacklisted("rm -rf output", blacklist) == (True, "rm")
+        assert is_command_blacklisted("git push origin main", blacklist) == (
+            True,
+            "git push",
+        )
+        assert is_command_blacklisted("ls && rm output", blacklist) == (True, "rm")
+        assert is_command_blacklisted("git status", blacklist) == (False, "")
+        assert is_command_blacklisted("python -c 'print(1)' | sh", blacklist) == (
+            True,
+            "python -c",
+        )
 
-    def test_default_allowlist_covers_safe_commands_and_readonly_git(self):
-        assert is_command_allowlisted("rg -n TODO src", DEFAULT_COMMAND_ALLOWLIST)
-        assert is_command_allowlisted("git log --oneline -5", DEFAULT_COMMAND_ALLOWLIST)
-        assert is_command_allowlisted(
-            "git branch --show-current", DEFAULT_COMMAND_ALLOWLIST
+    def test_default_blacklist_covers_dangerous_commands(self):
+        assert is_command_blacklisted("rg -n TODO src", DEFAULT_COMMAND_BLACKLIST) == (
+            False,
+            "",
         )
-        assert not is_command_allowlisted(
-            "git branch -d old-branch", DEFAULT_COMMAND_ALLOWLIST
+        assert is_command_blacklisted("git log --oneline -5", DEFAULT_COMMAND_BLACKLIST) == (
+            False,
+            "",
         )
-        assert not is_command_allowlisted(
-            "git remote add origin https://example.com", DEFAULT_COMMAND_ALLOWLIST
+        assert is_command_blacklisted("git push origin main", DEFAULT_COMMAND_BLACKLIST) == (
+            True,
+            "git push",
         )
 
     def test_command_safety_rejects_workspace_escape(self, tmp_path):
@@ -116,43 +123,38 @@ class TestPermissionManager:
         assert "系统关键路径" in decision.reason
 
     @pytest.mark.asyncio
-    async def test_dangerous_command_denied(self, manager):
-        """测试危险命令会进入用户确认；用户拒绝后不执行。"""
-        manager.ask_user_callback = AsyncMock(return_value={"action": "deny"})
-
+    async def test_blacklisted_command_denied_without_confirmation(self, manager):
+        """测试黑名单命令直接拒绝，不进入用户确认。"""
+        manager.ask_user_callback = AsyncMock(return_value={"action": "allow_once"})
         decision = await manager.check("bash", {"command": "rm -rf /"})
 
         assert not decision.allowed
-        request = manager.ask_user_callback.call_args.args[0]
-        assert "危险命令" in request["warning"]
+        assert "黑名单" in decision.reason
+        manager.ask_user_callback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_confirmation_required(self, manager):
-        """测试需要用户确认的操作。"""
-        # 模拟用户确认回调
-        manager.ask_user_callback = AsyncMock(return_value={"action": "allow_once"})
-
-        decision = await manager.check("bash", {"command": "echo hello"})
-
-        assert decision.allowed
-        assert decision.user_confirmed
-
-    @pytest.mark.asyncio
-    async def test_allowlisted_command_auto_approved(self, manager):
-        manager.set_command_allowlist(["echo"])
-
+    async def test_non_blacklisted_command_auto_approved(self, manager):
+        """测试未命中黑名单的安全命令自动放行。"""
         decision = await manager.check("bash", {"command": "echo hello"})
 
         assert decision.allowed
         assert decision.auto_approved
-        assert "白名单" in decision.reason
-        assert manager.ask_user_callback is None
+        assert not manager.ask_user_callback
 
     @pytest.mark.asyncio
-    async def test_allowlisted_command_with_external_write_requires_confirmation(
+    async def test_blacklisted_command_can_be_configured(self, manager):
+        manager.set_command_blacklist(["echo"])
+
+        decision = await manager.check("bash", {"command": "echo hello"})
+
+        assert not decision.allowed
+        assert "黑名单" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_non_blacklisted_command_with_external_write_requires_confirmation(
         self, manager
     ):
-        manager.set_command_allowlist(["echo"])
+        manager.set_command_blacklist([])
         manager.ask_user_callback = AsyncMock(return_value={"action": "deny"})
 
         decision = await manager.check(
@@ -165,14 +167,14 @@ class TestPermissionManager:
 
     @pytest.mark.asyncio
     async def test_decision_memory(self, manager):
-        """测试决策记忆。"""
+        """测试非黑名单命令无需用户确认。"""
         manager.ask_user_callback = AsyncMock(return_value={"action": "allow_always"})
 
-        # 第一次需要确认
         decision1 = await manager.check("bash", {"command": "echo test"})
-        assert decision1.user_confirmed
+        assert decision1.allowed
+        assert decision1.auto_approved
+        manager.ask_user_callback.assert_not_awaited()
 
-        # 第二次自动批准（记忆了决策）
         decision2 = await manager.check("bash", {"command": "echo test"})
         assert decision2.allowed
         assert decision2.auto_approved

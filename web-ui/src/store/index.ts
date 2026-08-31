@@ -15,7 +15,7 @@ interface AppState {
   // Session 相关
   sessionId: string | null;
   workspace: string;
-  commandAllowlist: string[];
+  commandBlacklist: string[];
   currentLane: string;
   lanes: LanePointer[];
   agentState: AgentState;
@@ -50,7 +50,7 @@ interface AppState {
   setCurrentLane: (lane: string) => void;
   setAgentState: (state: AgentState) => void;
   setIsRunning: (running: boolean) => void;
-  setCommandAllowlist: (commands: string[]) => void;
+  setCommandBlacklist: (commands: string[]) => void;
 
   addEntry: (entry: Entry) => void;
   updateEntries: (entries: Entry[]) => void;
@@ -85,7 +85,7 @@ export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
   workspace: '',
-  commandAllowlist: [],
+  commandBlacklist: [],
   currentLane: 'main',
   lanes: [],
   agentState: 'idle',
@@ -120,7 +120,7 @@ export const useStore = create<AppState>((set) => ({
       return {
         sessionId,
         workspace: data.workspace || '',
-        commandAllowlist: data.command_allowlist || [],
+        commandBlacklist: data.command_blacklist || [],
         currentLane: nextLane,
         lanes: data.lanes || [],
         agentState: data.agent_state || 'idle',
@@ -139,7 +139,7 @@ export const useStore = create<AppState>((set) => ({
     set({
       sessionId: null,
       workspace: '',
-      commandAllowlist: [],
+      commandBlacklist: [],
       currentLane: 'main',
       lanes: [],
       agentState: 'idle',
@@ -175,7 +175,7 @@ export const useStore = create<AppState>((set) => ({
     ),
   setAgentState: (state) => set({ agentState: state }),
   setIsRunning: (running) => set({ isRunning: running }),
-  setCommandAllowlist: (commands) => set({ commandAllowlist: commands }),
+  setCommandBlacklist: (commands) => set({ commandBlacklist: commands }),
 
   addEntry: (entry) =>
     set((state) => ({

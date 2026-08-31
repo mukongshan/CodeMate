@@ -159,7 +159,7 @@ export interface SessionSnapshot {
   git_enabled?: boolean;
   git_disabled_reason?: string;
   repository_root?: string | null;
-  command_allowlist: string[];
+  command_blacklist: string[];
   current_lane: string;
   agent_state: AgentState;
   is_running: boolean;
