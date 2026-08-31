@@ -106,6 +106,9 @@ describe('useWebSocket', () => {
       ws.emit({ type: 'text_delta', data: { message_id: 'm1', text: 'Hello' } });
       ws.emit({ type: 'tool_call_start', data: { call_id: 'c1', tool_name: 'read_file', args: { path: 'a.txt' } } });
       ws.emit({ type: 'tool_call_end', data: { call_id: 'c1', status: 'success', result: 'ok' } });
+      ws.emit({ type: 'subagent_started', data: { subagent_id: 'sub-1', task: 'inspect', max_steps: 8, status: 'pending' } });
+      ws.emit({ type: 'subagent_progress', data: { subagent_id: 'sub-1', step: 2, max_steps: 8, status: 'running', tool_name: 'grep', message: '正在调用 grep' } });
+      ws.emit({ type: 'subagent_done', data: { subagent_id: 'sub-1', status: 'completed', content: 'done', details: { tool_calls: 2 } } });
       ws.emit({ type: 'permission_request', data: { request_id: 'p1', tool_name: 'bash', args: { command: 'dir' }, risk_level: 'high', warning: 'danger' } });
       ws.emit({ type: 'lane_created', data: { lane: 'feature-x' } });
       ws.emit({ type: 'lane_switched', data: { lane: 'feature-x' } });
@@ -117,6 +120,12 @@ describe('useWebSocket', () => {
     expect(useStore.getState().messages).toHaveLength(1);
     expect(useStore.getState().messages[0].content).toBe('Hello');
     expect(useStore.getState().toolCalls.get('c1')?.status).toBe('success');
+    expect(useStore.getState().subagents.get('sub-1')).toMatchObject({
+      status: 'completed',
+      step: 2,
+      tool_name: 'grep',
+      content: 'done',
+    });
     expect(useStore.getState().permissionRequest?.request_id).toBe('p1');
     expect(useStore.getState().agentState).toBe('executing_tool');
     expect(useStore.getState().runtimeError?.message).toBe('boom');
@@ -126,6 +135,7 @@ describe('useWebSocket', () => {
       ws.emit({ type: 'run_started', data: { run_id: 'r2', lane: 'main' } });
     });
     expect(useStore.getState().isRunning).toBe(true);
+    expect(useStore.getState().subagents.size).toBe(0);
 
     act(() => {
       ws.emit({ type: 'run_completed', data: { run_id: 'r2', status: 'completed', iterations: 1, total_tokens: 1, duration: 0.1 } });

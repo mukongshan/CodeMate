@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { AlertTriangle, Send, X } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
+import SubagentPanel from './SubagentPanel';
 import { getLaneConversation } from '../../utils/history';
 
 interface ConversationPanelProps {
@@ -125,6 +126,8 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
             ))}
           </div>
         ))}
+
+        <SubagentPanel />
 
         <div ref={messagesEndRef} />
       </div>

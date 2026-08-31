@@ -78,14 +78,20 @@ export interface SubAgent {
   max_steps: number;
   step: number;
   tool_name?: string;
-  status: 'pending' | 'completed' | 'partial' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'error' | 'cancelled' | 'timeout';
+  message?: string;
   content?: string;
+  parent_run_id?: string;
+  parent_lane?: string;
   details?: {
-    subagent_id: string;
-    tool_calls: number;
-    files_touched: string[];
-    duration: number;
-    total_tokens: number;
+    subagent_id?: string;
+    tool_calls?: number;
+    files_touched?: string[];
+    duration?: number;
+    total_tokens?: number;
+    summary_length?: number;
+    summary_over_limit?: boolean;
+    error?: string;
   };
 }
 

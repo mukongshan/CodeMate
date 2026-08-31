@@ -17,6 +17,7 @@ export function useWebSocket(sessionId: string | null) {
     appendMessageText,
     updateToolCall,
     updateSubagent,
+    clearSubagents,
     setPermissionRequest,
     setRuntimeError,
     clearRuntimeError,
@@ -107,6 +108,7 @@ export function useWebSocket(sessionId: string | null) {
     setWsConnected,
     setWsReconnecting,
     addToast,
+    clearSubagents,
     clearRuntimeError,
     setRuntimeError,
   ]);
@@ -159,7 +161,9 @@ export function useWebSocket(sessionId: string | null) {
           task: data.task,
           max_steps: data.max_steps,
           step: 0,
-          status: 'pending',
+          status: data.status || 'pending',
+          parent_run_id: data.parent_run_id,
+          parent_lane: data.parent_lane,
         });
         break;
 
@@ -167,6 +171,8 @@ export function useWebSocket(sessionId: string | null) {
         updateSubagent(data.subagent_id, {
           step: data.step,
           tool_name: data.tool_name,
+          status: data.status || 'running',
+          message: data.message,
         });
         break;
 
@@ -175,6 +181,7 @@ export function useWebSocket(sessionId: string | null) {
           status: data.status,
           content: data.content,
           details: data.details,
+          message: data.message,
         });
         break;
 
@@ -184,6 +191,7 @@ export function useWebSocket(sessionId: string | null) {
 
       case 'run_started':
         clearRuntimeError();
+        clearSubagents();
         setAgentState('preparing');
         setIsRunning(true);
         break;

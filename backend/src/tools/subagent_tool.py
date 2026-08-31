@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
 
 from ..llm.client import LLMClient
 from ..llm.events import Message
@@ -27,8 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STEPS = 8
 # wall-clock 兜底：步数预算防不住单步卡死（比如一个卡住的工具调用）
 SUBAGENT_TIMEOUT = 120
-# 结论截断上限，避免子 Agent 的长篇输出挤占父上下文
-SUMMARY_LIMIT = 2000
+# 仅用于提示和 UI 标记，不作为硬截断阈值
+SUMMARY_SOFT_LIMIT = 2000
 
 
 class DelegateTaskTool(Tool):
@@ -96,7 +95,12 @@ class DelegateTaskTool(Tool):
 
         await self._emit(
             "subagent_started",
-            {"subagent_id": subagent_id, "task": task, "max_steps": max_steps},
+            {
+                "subagent_id": subagent_id,
+                "task": task,
+                "max_steps": max_steps,
+                "status": "pending",
+            },
         )
 
         provider = EphemeralMessageProvider(
@@ -127,6 +131,7 @@ class DelegateTaskTool(Tool):
                     "subagent_id": subagent_id,
                     "status": "error",
                     "content": "子 Agent 超时",
+                    "details": {"error": f"超过 {SUBAGENT_TIMEOUT} 秒"},
                 },
             )
             return ToolResult.error(
@@ -137,7 +142,12 @@ class DelegateTaskTool(Tool):
             logger.exception("子 Agent 执行失败")
             await self._emit(
                 "subagent_done",
-                {"subagent_id": subagent_id, "status": "error", "content": str(exc)},
+                {
+                    "subagent_id": subagent_id,
+                    "status": "error",
+                    "content": str(exc),
+                    "details": {"error": str(exc)},
+                },
             )
             return ToolResult.error(f"子 Agent 执行失败: {exc}")
 
@@ -147,7 +157,7 @@ class DelegateTaskTool(Tool):
             if summary:
                 result.final_text = summary
 
-        return self._package(result, subagent_id)
+        return await self._package(result, subagent_id)
 
     async def _force_wrapup(self, provider, wrapup_prompt: str) -> str:
         """强制追加一轮 tool_choice=none 的收尾调用（15 号文档 6.2 节）。
@@ -171,13 +181,12 @@ class DelegateTaskTool(Tool):
             return ""
         return "".join(parts)
 
-    def _package(self, result, subagent_id: str) -> ToolResult:
+    async def _package(self, result, subagent_id: str) -> ToolResult:
         """双通道打包（15 号文档 7.1 节）。"""
         summary = (result.final_text or "").strip()
         if not summary:
             summary = "子 Agent 没有产出结论。"
-        if len(summary) > SUMMARY_LIMIT:
-            summary = summary[:SUMMARY_LIMIT] + "…（结论过长已截断）"
+        summary_over_limit = len(summary) > SUMMARY_SOFT_LIMIT
 
         status = result.status
         if status == "error":
@@ -192,18 +201,18 @@ class DelegateTaskTool(Tool):
             "files_touched": result.touched_paths,
             "duration": round(result.duration, 2),
             "total_tokens": result.total_tokens,
+            "summary_length": len(summary),
+            "summary_over_limit": summary_over_limit,
         }
 
-        asyncio.create_task(
-            self._emit(
-                "subagent_done",
-                {
-                    "subagent_id": subagent_id,
-                    "status": status,
-                    "content": content,
-                    "details": details,
-                },
-            )
+        await self._emit(
+            "subagent_done",
+            {
+                "subagent_id": subagent_id,
+                "status": status,
+                "content": content,
+                "details": details,
+            },
         )
 
         return ToolResult(
@@ -228,9 +237,11 @@ class DelegateTaskTool(Tool):
                     "subagent_progress",
                     {
                         "subagent_id": subagent_id,
+                        "status": "running",
                         "step": step["n"],
                         "max_steps": max_steps,
                         "tool_name": payload.get("tool_name"),
+                        "message": f"正在调用 {payload.get('tool_name') or '工具'}",
                     },
                 )
 

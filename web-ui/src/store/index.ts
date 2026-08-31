@@ -61,6 +61,7 @@ interface AppState {
 
   updateToolCall: (callId: string, update: Partial<ToolCall>) => void;
   updateSubagent: (subagentId: string, update: Partial<SubAgent>) => void;
+  clearSubagents: () => void;
 
   setWsConnected: (connected: boolean) => void;
   setWsReconnecting: (reconnecting: boolean) => void;
@@ -107,7 +108,7 @@ export const useStore = create<AppState>((set) => ({
 
   // Actions
   setSession: (sessionId, data) =>
-    set({
+    set((state) => ({
       sessionId,
       workspace: data.workspace || '',
       commandAllowlist: data.command_allowlist || [],
@@ -116,13 +117,13 @@ export const useStore = create<AppState>((set) => ({
       agentState: data.agent_state || 'idle',
       isRunning: data.is_running || false,
       entries: data.entries || [],
-      messages: [],
-      toolCalls: new Map(),
-      subagents: new Map(),
+      messages: state.sessionId === sessionId ? state.messages : [],
+      toolCalls: state.sessionId === sessionId ? state.toolCalls : new Map(),
+      subagents: state.sessionId === sessionId ? state.subagents : new Map(),
       selectedNodeId: null,
       permissionRequest: null,
       runtimeError: null,
-    }),
+    })),
 
   clearSession: () =>
     set({
@@ -206,6 +207,8 @@ export const useStore = create<AppState>((set) => ({
       }
       return { subagents: newSubagents };
     }),
+
+  clearSubagents: () => set({ subagents: new Map() }),
 
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setWsReconnecting: (reconnecting) => set({ wsReconnecting: reconnecting }),
