@@ -163,9 +163,18 @@ function SubagentCard({ agent }: { agent: SubAgent }) {
 }
 
 export default function SubagentPanel() {
-  const { subagents } = useStore();
+  const { subagents, currentLane } = useStore();
   const [expanded, setExpanded] = useState(false);
-  const agents = useMemo(() => Array.from(subagents.values()), [subagents]);
+  const agents = useMemo(
+    () =>
+      Array.from(subagents.values()).filter(
+        (agent) =>
+          agent.lane === undefined ||
+          agent.lane === currentLane ||
+          agent.parent_lane === currentLane
+      ),
+    [currentLane, subagents]
+  );
   const activeCount = agents.filter((agent) => ACTIVE_STATUSES.has(agent.status)).length;
 
   if (agents.length === 0) return null;

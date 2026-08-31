@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { AlertTriangle, Send, X } from 'lucide-react';
+import { AlertTriangle, Send, Square, X } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
 import SubagentPanel from './SubagentPanel';
@@ -8,9 +8,10 @@ import { getLaneConversation } from '../../utils/history';
 
 interface ConversationPanelProps {
   sendMessage: (content: string, lane?: string) => void;
+  interruptRun: () => boolean;
 }
 
-export default function ConversationPanel({ sendMessage }: ConversationPanelProps) {
+export default function ConversationPanel({ sendMessage, interruptRun }: ConversationPanelProps) {
   const {
     entries,
     lanes,
@@ -23,6 +24,7 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
     clearRuntimeError,
   } = useStore();
   const [input, setInput] = useState('');
+  const [interrupting, setInterrupting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const historyMessages = useMemo(
@@ -32,9 +34,13 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
   const displayMessages = useMemo(() => {
     if (messages.length === 0) return historyMessages;
     const historyIds = new Set(historyMessages.map((message) => message.message_id));
-    const liveMessages = messages.filter((message) => !historyIds.has(message.message_id));
+    const liveMessages = messages.filter(
+      (message) =>
+        (message.lane === undefined || message.lane === currentLane) &&
+        !historyIds.has(message.message_id)
+    );
     return [...historyMessages, ...liveMessages];
-  }, [historyMessages, messages]);
+  }, [currentLane, historyMessages, messages]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -49,6 +55,12 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
     }
   }, [input]);
 
+  useEffect(() => {
+    if (!isRunning) {
+      setInterrupting(false);
+    }
+  }, [isRunning]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const content = input.trim();
@@ -59,6 +71,7 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
       role: 'user',
       content,
       timestamp: Date.now(),
+      lane: currentLane,
     });
     sendMessage(content, currentLane);
     setInput('');
@@ -153,14 +166,28 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
               <span>{currentLane}</span>
             </div>
 
-            <button
-              type="submit"
-              disabled={!input.trim() || isRunning}
-              className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white rounded-md hover:opacity-90 transition-opacity disabled:opacity-50"
-            >
-              <span className="text-sm">发送</span>
-              <Send className="w-4 h-4" />
-            </button>
+            {isRunning ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (interruptRun()) setInterrupting(true);
+                }}
+                disabled={interrupting}
+                className="flex items-center gap-1.5 rounded-md border border-status-error bg-red-50 px-4 py-2 text-status-error transition-colors hover:bg-red-100 disabled:opacity-50"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+                <span className="text-sm">{interrupting ? '中断中...' : '中断'}</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white rounded-md hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                <span className="text-sm">发送</span>
+                <Send className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </form>
       </div>

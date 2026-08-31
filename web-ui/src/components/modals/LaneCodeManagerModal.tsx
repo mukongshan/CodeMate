@@ -50,11 +50,14 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     const checkpointData = await checkpointResponse.json();
     if (!statusResponse.ok) throw new Error(errorMessage(statusData, '读取代码状态失败'));
     if (!checkpointResponse.ok) throw new Error(errorMessage(checkpointData, '读取检查点失败'));
-    setGitState(statusData.git || null);
+    const nextGitState = statusData.git || null;
+    setGitState(nextGitState);
     setCheckpoints(checkpointData.checkpoints || []);
     setSelectedPaths(statusData.git?.changed_files || []);
     setSelectedCheckpoint(checkpointData.checkpoints?.[checkpointData.checkpoints.length - 1]?.checkpoint_id || '');
-    setTargetBranch(`${lane}-result`);
+    setTargetBranch(nextGitState?.published_branch || `${lane}-result`);
+    setPublishMode(nextGitState?.published_mode === 'squash' ? 'squash' : 'branch');
+    setBaseBranch(nextGitState?.published_base_branch || '');
   };
 
   const loadLanes = async () => {
@@ -90,7 +93,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     return data;
   };
 
-  const runAction = async (action: () => Promise<void>, success: string) => {
+  const runAction = async (action: () => Promise<void>, success: string | (() => string)) => {
     setBusy(true);
     setMessage('');
     try {
@@ -98,7 +101,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
       await syncSession();
       await loadLanes();
       await loadLaneData(selectedLane);
-      addToast({ type: 'success', message: success });
+      addToast({ type: 'success', message: typeof success === 'function' ? success() : success });
     } catch (actionError) {
       setMessage(actionError instanceof Error ? actionError.message : '操作失败');
     } finally {
@@ -132,23 +135,31 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
 
   const discard = () => runAction(
     async () => {
-      if (!window.confirm('将永久放弃当前 Worktree 的未保存修改，是否继续？')) return;
+      if (!window.confirm('将永久放弃当前工作区的未保存修改，是否继续？')) return;
       await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/discard`, { method: 'POST' });
     },
     '未保存代码修改已放弃'
   );
 
-  const publish = () => runAction(
-    async () => {
+  const publish = () => {
+    let successMessage = 'Lane 已发布为普通 Git 分支';
+    return runAction(
+      async () => {
       if (!targetBranch.trim()) throw new Error('请输入发布目标分支名');
-      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/publish`, {
+      const result = await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target_branch: targetBranch, mode: publishMode, base_branch: baseBranch || null }),
       });
-    },
-    'Lane 已发布为普通 Git 分支'
-  );
+      successMessage = result.action === 'updated'
+        ? '已更新发布分支'
+        : result.action === 'unchanged'
+          ? '发布分支已经是最新状态'
+          : 'Lane 已发布为普通 Git 分支';
+      },
+      () => successMessage
+    );
+  };
 
   const archiveOrRestore = () => runAction(
     async () => {
@@ -156,6 +167,15 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
       await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/${endpoint}`, { method: 'POST' });
     },
     selectedLanePointer?.archived ? 'Lane 已恢复' : 'Lane 已归档'
+  );
+
+  const updatingPublishedBranch = Boolean(
+    gitState?.published_branch && gitState.published_branch === targetBranch.trim()
+  );
+  const publishedBranchIsCurrent = Boolean(
+    updatingPublishedBranch &&
+    gitState?.published_lane_head &&
+    gitState.published_lane_head === gitState.head_commit
   );
 
   return (
@@ -230,11 +250,20 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
                   <h4 className="mb-2 flex items-center gap-2 font-medium"><GitBranch className="h-4 w-4" />发布到用户 Git</h4>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <input value={targetBranch} onChange={(event) => setTargetBranch(event.target.value)} placeholder="例如 feature/login" className="rounded border border-border bg-surface-1 px-2 py-1.5 text-xs" />
-                    <select value={publishMode} onChange={(event) => setPublishMode(event.target.value as 'branch' | 'squash')} className="rounded border border-border bg-surface-1 px-2 py-1.5 text-xs"><option value="branch">保留检查点历史</option><option value="squash">压缩为一个正式提交</option></select>
+                    <select value={publishMode} disabled={updatingPublishedBranch} onChange={(event) => setPublishMode(event.target.value as 'branch' | 'squash')} className="rounded border border-border bg-surface-1 px-2 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="branch">保留检查点历史</option><option value="squash">压缩为一个正式提交</option></select>
                   </div>
-                  {publishMode === 'squash' && <input value={baseBranch} onChange={(event) => setBaseBranch(event.target.value)} placeholder="基线分支（默认当前用户分支）" className="mt-2 w-full rounded border border-border bg-surface-1 px-2 py-1.5 text-xs" />}
-                  <button onClick={publish} disabled={busy || selectedLanePointer?.archived} className="mt-2 rounded bg-accent px-3 py-1.5 text-xs text-white disabled:opacity-50">发布普通分支</button>
-                  {gitState.published_branch && <div className="mt-2 text-xs text-status-success">已发布：{gitState.published_branch}</div>}
+                  {publishMode === 'squash' && <input value={baseBranch} disabled={updatingPublishedBranch} onChange={(event) => setBaseBranch(event.target.value)} placeholder="基线分支（默认当前用户分支）" className="mt-2 w-full rounded border border-border bg-surface-1 px-2 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60" />}
+                  <button onClick={publish} disabled={busy || selectedLanePointer?.archived || publishedBranchIsCurrent} className="mt-2 rounded bg-accent px-3 py-1.5 text-xs text-white disabled:opacity-50">{publishedBranchIsCurrent ? '发布分支已是最新' : updatingPublishedBranch ? '更新已发布分支' : '发布普通分支'}</button>
+                  {gitState.published_branch && (
+                    <div className="mt-2 space-y-1 text-xs text-status-success">
+                      <div>已发布：{gitState.published_branch}</div>
+                      <div className="text-text-muted">
+                        {gitState.published_mode === 'squash' ? '增量压缩提交' : '保留检查点历史'}
+                        {gitState.publication_count ? ` · 已发布 ${gitState.publication_count} 次` : ''}
+                      </div>
+                      {!publishedBranchIsCurrent && updatingPublishedBranch && <div className="text-status-warning">Lane 有新的检查点，可以继续更新该分支。</div>}
+                    </div>
+                  )}
                 </section>
 
                 <div className="flex items-center justify-between rounded-md border border-border p-3">

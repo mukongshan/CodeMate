@@ -60,13 +60,34 @@ def test_checkpoint_creates_shared_repository_commit(tmp_path):
     )
 
     workspace = manager.active_workspace("main")
+    assert workspace == repo
+    assert manager.get_binding("main").worktree_path == str(repo.resolve())
     (workspace / "readme.txt").write_text("changed\n", encoding="utf-8")
     checkpoint = manager.checkpoint("main", reason="manual")
 
     assert checkpoint is not None
     assert git(repo, "cat-file", "-t", checkpoint.commit_sha) == "commit"
     assert manager.status("main")["changed_files"] == []
-    assert (repo / "readme.txt").read_text(encoding="utf-8") == "base\n"
+    assert (repo / "readme.txt").read_text(encoding="utf-8") == "changed\n"
+
+
+def test_close_worktrees_preserves_source_main_and_removes_feature(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "close-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    feature_path = Path(feature.worktree_path)
+
+    manager.close_worktrees()
+
+    assert repo.exists()
+    assert manager.active_workspace("main") == repo
+    assert not feature_path.exists()
 
 
 def test_sensitive_file_is_not_committed(tmp_path):
@@ -89,7 +110,7 @@ def test_sensitive_file_is_not_committed(tmp_path):
     assert manager.status("main")["changed_files"] == [".env"]
 
 
-def test_external_managed_branch_commit_is_marked_out_of_sync(tmp_path):
+def test_external_managed_branch_commit_is_adopted_and_can_continue(tmp_path):
     repo = create_repo(tmp_path)
     manager = GitLaneManager(
         "external-change-session",
@@ -98,18 +119,23 @@ def test_external_managed_branch_commit_is_marked_out_of_sync(tmp_path):
         tmp_path / "worktrees",
         1024 * 1024,
     )
-    workspace = manager.active_workspace("main")
+    feature = manager.create_lane("feature", "main")
+    workspace = Path(feature.worktree_path)
     (workspace / "readme.txt").write_text("external\n", encoding="utf-8")
     git(workspace, "add", "readme.txt")
     git(workspace, "commit", "-m", "external managed branch commit")
 
-    lane_state = manager.lane_api("main")
-    assert lane_state["sync_state"] == "out_of_sync"
+    lane_state = manager.lane_api("feature")
+    external_head = git(workspace, "rev-parse", "HEAD")
+    assert lane_state["sync_state"] == "clean"
+    assert manager.get_binding("feature").head_commit == external_head
 
-    with pytest.raises(AgentError) as raised:
-        manager.checkpoint("main", reason="manual")
+    (workspace / "readme.txt").write_text("external plus codemate\n", encoding="utf-8")
+    checkpoint = manager.checkpoint("feature", reason="manual")
 
-    assert raised.value.code == "GIT_OPERATION_FAILED"
+    assert checkpoint is not None
+    assert checkpoint.previous_commit == external_head
+    assert git(workspace, "rev-parse", "HEAD") == checkpoint.commit_sha
 
 
 def test_selective_checkpoint_keeps_unselected_changes_dirty(tmp_path):
@@ -161,7 +187,95 @@ def test_publish_and_restore_checkpoint(tmp_path):
     assert git(repo, "rev-parse", "adopted-result") == first.commit_sha
 
 
-def test_publish_squash_creates_formal_commit_without_touching_source(tmp_path):
+def test_branch_publish_can_fast_forward_the_same_target(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "republish-branch-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    workspace = Path(feature.worktree_path)
+    (workspace / "readme.txt").write_text("first publish\n", encoding="utf-8")
+    first = manager.checkpoint("feature", reason="manual")
+    assert first is not None
+
+    created = manager.publish("feature", "feature/result", mode="branch")
+    assert created["action"] == "created"
+    assert git(repo, "rev-parse", "feature/result") == first.commit_sha
+
+    (workspace / "readme.txt").write_text("second publish\n", encoding="utf-8")
+    second = manager.checkpoint("feature", reason="manual")
+    assert second is not None
+    updated = manager.publish("feature", "feature/result", mode="branch")
+
+    assert updated["action"] == "updated"
+    assert updated["previous_published_commit"] == first.commit_sha
+    assert updated["publication_count"] == 2
+    assert git(repo, "rev-parse", "feature/result") == second.commit_sha
+    assert manager.get_binding("feature").published_lane_head == second.commit_sha
+
+
+def test_republish_rejects_an_externally_moved_target_branch(tmp_path):
+    repo = create_repo(tmp_path)
+    initial = git(repo, "rev-parse", "HEAD")
+    manager = GitLaneManager(
+        "republish-external-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    workspace = Path(feature.worktree_path)
+    (workspace / "readme.txt").write_text("published\n", encoding="utf-8")
+    assert manager.checkpoint("feature", reason="manual") is not None
+    manager.publish("feature", "feature/result", mode="branch")
+
+    git(repo, "branch", "-f", "feature/result", initial)
+    (workspace / "readme.txt").write_text("new result\n", encoding="utf-8")
+    assert manager.checkpoint("feature", reason="manual") is not None
+
+    with pytest.raises(AgentError) as raised:
+        manager.publish("feature", "feature/result", mode="branch")
+
+    assert "CodeMate 之外发生了变化" in raised.value.message
+    assert git(repo, "rev-parse", "feature/result") == initial
+
+
+def test_republish_rejects_a_target_checked_out_in_another_worktree(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "republish-checked-out-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    workspace = Path(feature.worktree_path)
+    (workspace / "readme.txt").write_text("published\n", encoding="utf-8")
+    assert manager.checkpoint("feature", reason="manual") is not None
+    manager.publish("feature", "feature/result", mode="branch")
+
+    checked_out = tmp_path / "checked-out-result"
+    git(repo, "worktree", "add", str(checked_out), "feature/result")
+    try:
+        (workspace / "readme.txt").write_text("new result\n", encoding="utf-8")
+        assert manager.checkpoint("feature", reason="manual") is not None
+
+        with pytest.raises(AgentError) as raised:
+            manager.publish("feature", "feature/result", mode="branch")
+
+        assert "正在工作区中检出" in raised.value.message
+        assert Path(raised.value.details["worktree"]).resolve() == checked_out.resolve()
+    finally:
+        git(repo, "worktree", "remove", "--force", str(checked_out))
+
+
+def test_publish_squash_creates_formal_commit_from_source_main(tmp_path):
     repo = create_repo(tmp_path)
     source_before = (repo / "readme.txt").read_text(encoding="utf-8")
     manager = GitLaneManager(
@@ -180,7 +294,40 @@ def test_publish_squash_creates_formal_commit_without_touching_source(tmp_path):
 
     assert published["target_branch"] == "adopted-squash"
     assert git(repo, "show", "adopted-squash:readme.txt") == "lane result"
-    assert (repo / "readme.txt").read_text(encoding="utf-8") == source_before
+    assert (repo / "readme.txt").read_text(encoding="utf-8") != source_before
+
+
+def test_squash_publish_appends_an_incremental_formal_commit(tmp_path):
+    repo = create_repo(tmp_path)
+    base = git(repo, "rev-parse", "HEAD")
+    manager = GitLaneManager(
+        "republish-squash-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    workspace = Path(feature.worktree_path)
+    (workspace / "readme.txt").write_text("first squash\n", encoding="utf-8")
+    first_lane_checkpoint = manager.checkpoint("feature", reason="manual")
+    assert first_lane_checkpoint is not None
+    first_publish = manager.publish("feature", "feature/squash", mode="squash")
+    first_published_commit = first_publish["published_commit"]
+
+    (workspace / "readme.txt").write_text("second squash\n", encoding="utf-8")
+    second_lane_checkpoint = manager.checkpoint("feature", reason="manual")
+    assert second_lane_checkpoint is not None
+    second_publish = manager.publish("feature", "feature/squash", mode="squash")
+
+    assert second_publish["action"] == "updated"
+    assert second_publish["previous_published_commit"] == first_published_commit
+    assert second_publish["published_commit"] != first_published_commit
+    assert git(repo, "show", "feature/squash:readme.txt") == "second squash"
+    assert git(repo, "rev-list", "--count", f"{base}..feature/squash") == "2"
+    binding = manager.get_binding("feature")
+    assert binding.published_lane_head == second_lane_checkpoint.commit_sha
+    assert binding.publication_count == 2
 
 
 def test_operation_journal_reconciles_unfinished_lane_creation(tmp_path):

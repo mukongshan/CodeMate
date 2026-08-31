@@ -6,7 +6,7 @@ import ToastContainer from './components/ToastContainer';
 
 function App() {
   const { sessionId } = useStore();
-  const { sendMessage, sendPermissionResponse } = useWebSocket(sessionId);
+  const { sendMessage, sendPermissionResponse, interruptRun } = useWebSocket(sessionId);
 
   if (!sessionId) {
     return (
@@ -22,6 +22,7 @@ function App() {
       <Workspace
         sendMessage={sendMessage}
         sendPermissionResponse={sendPermissionResponse}
+        interruptRun={interruptRun}
       />
       <ToastContainer />
     </>

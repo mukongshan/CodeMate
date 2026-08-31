@@ -15,6 +15,7 @@ export function useWebSocket(sessionId: string | null) {
     addMessage,
     updateMessage,
     appendMessageText,
+    finishStreamingMessages,
     updateToolCall,
     updateSubagent,
     clearSubagents,
@@ -115,9 +116,14 @@ export function useWebSocket(sessionId: string | null) {
 
   const handleEvent = (envelope: WSEnvelope) => {
     const { type, data } = envelope;
+    const eventBelongsToCurrentLane =
+      !data.lane || data.lane === useStore.getState().currentLane;
 
     switch (type) {
       case 'node_added':
+        if (data.message_id && data.id) {
+          updateMessage(data.message_id, { message_id: data.id });
+        }
         break;
 
       case 'text_delta':
@@ -131,11 +137,13 @@ export function useWebSocket(sessionId: string | null) {
           content: '',
           timestamp: Date.now(),
           is_streaming: true,
+          lane: data.lane,
         });
         break;
 
       case 'message_end':
         updateMessage(data.message_id, { is_streaming: false });
+        finishStreamingMessages();
         break;
 
       case 'tool_call_start':
@@ -144,6 +152,7 @@ export function useWebSocket(sessionId: string | null) {
           tool_name: data.tool_name,
           args: data.args,
           status: 'pending',
+          lane: data.lane,
         });
         break;
 
@@ -164,6 +173,7 @@ export function useWebSocket(sessionId: string | null) {
           status: data.status || 'pending',
           parent_run_id: data.parent_run_id,
           parent_lane: data.parent_lane,
+          lane: data.lane || data.parent_lane,
         });
         break;
 
@@ -186,10 +196,11 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'status_update':
-        setAgentState(data.state);
+        if (eventBelongsToCurrentLane) setAgentState(data.state);
         break;
 
       case 'run_started':
+        if (!eventBelongsToCurrentLane) break;
         clearRuntimeError();
         clearSubagents();
         setAgentState('preparing');
@@ -197,14 +208,29 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'run_completed':
+        if (!eventBelongsToCurrentLane) break;
         setIsRunning(false);
+        finishStreamingMessages(data.status === 'aborted');
+        setPermissionRequest(null);
+        if (data.status === 'aborted') {
+          addToast({ type: 'info', message: '已中断当前回复' });
+        }
         void syncSessionSnapshot();
+        break;
+
+      case 'run_interrupt_requested':
+        break;
+
+      case 'run_interrupt_rejected':
+        setIsRunning(false);
+        addToast({ type: 'warning', message: data.message || '当前运行无法中断' });
         break;
 
       case 'llm_response':
         break;
 
       case 'permission_request':
+        if (!eventBelongsToCurrentLane) break;
         setPermissionRequest({
           request_id: data.request_id,
           tool_name: data.tool_name,
@@ -241,6 +267,7 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'run_error':
+        if (!eventBelongsToCurrentLane) break;
         setIsRunning(false);
         setRuntimeError({
           title: 'Agent 运行失败',
@@ -297,8 +324,19 @@ export function useWebSocket(sessionId: string | null) {
     );
   };
 
+  const interruptRun = () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      addToast({ type: 'error', message: 'Connection is not ready' });
+      return false;
+    }
+
+    wsRef.current.send(JSON.stringify({ type: 'interrupt_run' }));
+    return true;
+  };
+
   return {
     sendMessage,
     sendPermissionResponse,
+    interruptRun,
   };
 }

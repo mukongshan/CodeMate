@@ -158,8 +158,17 @@ class GitLaneManager:
         existing = self.store.bindings.get("main")
         if existing:
             return self._ensure_binding_workspace(existing)
-        base = self._git_output(["rev-parse", "HEAD"], cwd=self.repository_root)
-        return self._create_binding("main", base)
+        assert self.repository_root is not None
+        head = self._git_output(["rev-parse", "HEAD"], cwd=self.source_workspace)
+        binding = LaneCodeBinding(
+            lane="main",
+            managed_branch=self._source_branch(),
+            worktree_path=str(self.repository_root),
+            base_commit=head,
+            head_commit=head,
+        )
+        self.store.save_binding(binding)
+        return binding
 
     def ensure_legacy_lane(self, lane: str) -> LaneCodeBinding:
         """Create a binding for a pre-Git Lane using main's current Code Head."""
@@ -173,6 +182,8 @@ class GitLaneManager:
         if not self.enabled:
             return self.source_workspace
         binding = self.get_binding(lane)
+        if lane == "main":
+            return self.source_workspace
         return (Path(binding.worktree_path) / self.workspace_relative).resolve()
 
     def get_binding(self, lane: str) -> LaneCodeBinding:
@@ -249,6 +260,11 @@ class GitLaneManager:
             raise
 
     def remove_lane(self, lane: str) -> None:
+        if lane == "main":
+            raise AgentError(
+                message="main Lane 使用用户主目录，不能被删除",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
         if not self.enabled:
             return
         binding = self.store.bindings.get(lane)
@@ -466,18 +482,21 @@ class GitLaneManager:
                 message=f"Invalid target Git branch: {target_branch}",
                 code=CODE_GIT_OPERATION_FAILED,
             )
-        if self._git(
+        target_exists = self._git(
             ["show-ref", "--verify", "--quiet", f"refs/heads/{target_branch}"],
             check=False,
-        ).returncode == 0:
-            raise AgentError(
-                message=f"Target Git branch already exists: {target_branch}",
-                code=CODE_GIT_OPERATION_FAILED,
-                suggestions=["换一个目标分支名，避免覆盖用户分支"],
+        ).returncode == 0
+        if target_exists:
+            return self._update_published_branch(
+                binding,
+                target_branch,
+                mode=mode,
+                base_branch=base_branch,
             )
 
         created_branch = False
         publish_worktree: Optional[Path] = None
+        published_base_branch: Optional[str] = None
         try:
             if mode == "branch":
                 self._git(["branch", target_branch, binding.head_commit])
@@ -485,6 +504,7 @@ class GitLaneManager:
                 published_commit = binding.head_commit
             else:
                 base_ref = base_branch or self._source_branch()
+                published_base_branch = base_ref
                 base_commit = self._git_output(["rev-parse", base_ref])
                 publish_worktree = self._publish_worktree(target_branch)
                 self._git(
@@ -542,14 +562,228 @@ class GitLaneManager:
 
         binding.published_branch = target_branch
         binding.published_commit = published_commit
+        binding.published_lane_head = binding.head_commit
+        binding.published_mode = mode
+        binding.published_base_branch = published_base_branch
+        binding.publication_count = 1
         binding.published_at = time.time()
         self.store.save_binding(binding)
         return {
             "lane": lane,
             "mode": mode,
+            "action": "created",
             "target_branch": target_branch,
             "published_commit": published_commit,
+            "published_lane_head": binding.head_commit,
             "short_commit": published_commit[:8],
+            "publication_count": binding.publication_count,
+        }
+
+    def _update_published_branch(
+        self,
+        binding: LaneCodeBinding,
+        target_branch: str,
+        *,
+        mode: str,
+        base_branch: Optional[str],
+    ) -> dict:
+        if binding.published_branch != target_branch or not binding.published_commit:
+            raise AgentError(
+                message=f"Target Git branch already exists: {target_branch}",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "target_branch": target_branch,
+                    "published_branch": binding.published_branch,
+                },
+                suggestions=["换一个目标分支名，避免覆盖不属于当前 Lane 的用户分支"],
+            )
+
+        published_mode = binding.published_mode
+        previous_lane_head = binding.published_lane_head
+        if published_mode is None and mode == "branch":
+            # 旧版 branch 发布的目标提交就是当时的 Lane Head，可以安全迁移。
+            published_mode = "branch"
+            previous_lane_head = previous_lane_head or binding.published_commit
+            binding.published_mode = published_mode
+            binding.published_lane_head = previous_lane_head
+            binding.publication_count = max(binding.publication_count, 1)
+            binding.updated_at = time.time()
+            self.store.save_binding(binding)
+        if published_mode is None or previous_lane_head is None:
+            raise AgentError(
+                message="旧版发布记录缺少增量基线，不能安全更新原分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"target_branch": target_branch, "requested_mode": mode},
+                suggestions=["使用新的目标分支名重新发布"],
+            )
+        if published_mode != mode:
+            raise AgentError(
+                message="不能用不同发布模式更新同一个目标分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"published_mode": published_mode, "requested_mode": mode},
+                suggestions=["保持原发布模式，或使用新的目标分支名"],
+            )
+        if (
+            mode == "squash"
+            and base_branch
+            and binding.published_base_branch
+            and base_branch != binding.published_base_branch
+        ):
+            raise AgentError(
+                message="更新 squash 发布时不能更换基线分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "published_base_branch": binding.published_base_branch,
+                    "requested_base_branch": base_branch,
+                },
+                suggestions=["沿用原基线，或使用新的目标分支名重新发布"],
+            )
+
+        target_head = self._git_output(["rev-parse", target_branch])
+        if target_head != binding.published_commit:
+            raise AgentError(
+                message="已发布分支在 CodeMate 之外发生了变化，不能自动覆盖",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "target_branch": target_branch,
+                    "recorded_commit": binding.published_commit,
+                    "actual_commit": target_head,
+                },
+                suggestions=["检查外部提交后手动合并，或发布到新的目标分支"],
+            )
+        if previous_lane_head == binding.head_commit:
+            return self._publication_payload(
+                binding, target_branch, mode, action="unchanged"
+            )
+        if not self._is_ancestor(previous_lane_head, binding.head_commit):
+            raise AgentError(
+                message="Lane 历史已回退或改写，不能安全增量发布",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "previous_lane_head": previous_lane_head,
+                    "current_lane_head": binding.head_commit,
+                },
+                suggestions=["使用新的目标分支名重新发布"],
+            )
+
+        checked_out_path = self._branch_worktree(target_branch)
+        if checked_out_path is not None:
+            raise AgentError(
+                message=f"目标分支正在工作区中检出，不能后台更新: {target_branch}",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"target_branch": target_branch, "worktree": checked_out_path},
+                suggestions=["先在对应工作区切换到其他分支，再重试发布"],
+            )
+
+        previous_published_commit = binding.published_commit
+        if mode == "branch":
+            self._git(
+                [
+                    "update-ref",
+                    f"refs/heads/{target_branch}",
+                    binding.head_commit,
+                    target_head,
+                ]
+            )
+            published_commit = binding.head_commit
+        else:
+            published_commit = self._publish_squash_increment(
+                binding,
+                target_branch,
+                previous_lane_head,
+                target_head,
+            )
+
+        binding.published_commit = published_commit
+        binding.published_lane_head = binding.head_commit
+        binding.published_mode = mode
+        binding.publication_count = max(binding.publication_count, 1) + 1
+        binding.published_at = time.time()
+        self.store.save_binding(binding)
+        payload = self._publication_payload(
+            binding, target_branch, mode, action="updated"
+        )
+        payload["previous_published_commit"] = previous_published_commit
+        return payload
+
+    def _publish_squash_increment(
+        self,
+        binding: LaneCodeBinding,
+        target_branch: str,
+        previous_lane_head: str,
+        target_head: str,
+    ) -> str:
+        patch = self._git_bytes(
+            [
+                "diff",
+                "--binary",
+                "--full-index",
+                previous_lane_head,
+                binding.head_commit,
+                "--",
+            ]
+        ).stdout
+        if not patch:
+            return target_head
+
+        publish_worktree = self._publish_worktree(target_branch)
+        try:
+            self._git(["worktree", "add", str(publish_worktree), target_branch])
+            self._git_bytes(
+                ["apply", "--index", "--3way", "--whitespace=nowarn", "-"],
+                cwd=publish_worktree,
+                input_bytes=patch,
+            )
+            staged = self._git(
+                ["diff", "--cached", "--quiet"],
+                cwd=publish_worktree,
+                check=False,
+            )
+            if staged.returncode == 0:
+                return target_head
+            self._git(
+                [
+                    "-c",
+                    f"core.hooksPath={self._disabled_hooks_dir()}",
+                    "-c",
+                    "user.name=CodeMate Publisher",
+                    "-c",
+                    "user.email=publisher@codemate.local",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--no-verify",
+                    "-m",
+                    f"Update CodeMate Lane {binding.lane}",
+                ],
+                cwd=publish_worktree,
+            )
+            return self._git_output(["rev-parse", "HEAD"], cwd=publish_worktree)
+        finally:
+            if publish_worktree.exists():
+                self._git(
+                    ["worktree", "remove", "--force", str(publish_worktree)],
+                    check=False,
+                )
+
+    def _publication_payload(
+        self,
+        binding: LaneCodeBinding,
+        target_branch: str,
+        mode: str,
+        *,
+        action: str,
+    ) -> dict:
+        assert binding.published_commit is not None
+        return {
+            "lane": binding.lane,
+            "mode": mode,
+            "action": action,
+            "target_branch": target_branch,
+            "published_commit": binding.published_commit,
+            "published_lane_head": binding.published_lane_head,
+            "short_commit": binding.published_commit[:8],
+            "publication_count": binding.publication_count,
         }
 
     def compare(self, lane_a: str, lane_b: str) -> dict:
@@ -653,6 +887,8 @@ class GitLaneManager:
         for binding in list(self.store.bindings.values()):
             self.checkpoint(binding.lane, reason="before_session_delete")
         for binding in list(self.store.bindings.values()):
+            if binding.lane == "main" or Path(binding.worktree_path).resolve() == self.repository_root:
+                continue
             worktree = Path(binding.worktree_path)
             if worktree.exists():
                 self._git(["worktree", "remove", str(worktree)])
@@ -694,6 +930,23 @@ class GitLaneManager:
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _is_ancestor(self, older: str, newer: str) -> bool:
+        return self._git(
+            ["merge-base", "--is-ancestor", older, newer], check=False
+        ).returncode == 0
+
+    def _branch_worktree(self, branch: str) -> Optional[str]:
+        current_path: Optional[str] = None
+        expected_ref = f"branch refs/heads/{branch}"
+        for line in self._git_output(["worktree", "list", "--porcelain"]).splitlines():
+            if line.startswith("worktree "):
+                current_path = line.removeprefix("worktree ")
+            elif line == expected_ref:
+                return current_path
+            elif not line:
+                current_path = None
+        return None
 
     def _record_operation(
         self,
@@ -751,6 +1004,8 @@ class GitLaneManager:
         return binding
 
     def _ensure_binding_workspace(self, binding: LaneCodeBinding) -> LaneCodeBinding:
+        if binding.lane == "main":
+            return self._ensure_main_source_binding(binding)
         worktree = Path(binding.worktree_path)
         if worktree.exists():
             return binding
@@ -758,6 +1013,46 @@ class GitLaneManager:
         self._git(["worktree", "prune"], check=False)
         self._git(["worktree", "add", str(worktree), binding.managed_branch])
         binding.worktree_path = str(worktree.resolve())
+        self.store.save_binding(binding)
+        return binding
+
+    def _ensure_main_source_binding(self, binding: LaneCodeBinding) -> LaneCodeBinding:
+        """Use the user's repository worktree for main, with safe legacy migration."""
+        assert self.repository_root is not None
+        source_root = self.repository_root.resolve()
+        current_worktree = Path(binding.worktree_path).expanduser().resolve()
+        if current_worktree == source_root:
+            return binding
+
+        old_worktree = Path(binding.worktree_path)
+        old_changed = self._changed_paths(old_worktree) if old_worktree.exists() else []
+        source_changed = self._changed_paths(source_root)
+        source_head = self._git_output(["rev-parse", "HEAD"], cwd=self.source_workspace)
+        if old_changed or source_changed or binding.head_commit != source_head:
+            raise AgentError(
+                message="旧版 main Lane 不能自动迁移到用户主目录",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "source_workspace": str(self.source_workspace),
+                    "managed_worktree": str(old_worktree),
+                    "managed_changed_files": old_changed,
+                    "source_changed_files": source_changed,
+                    "managed_head": binding.head_commit,
+                    "source_head": source_head,
+                },
+                suggestions=[
+                    "先在旧的 main Worktree 中创建检查点",
+                    "确认用户主目录没有未提交修改后重试",
+                ],
+            )
+
+        if old_worktree.exists():
+            self._git(["worktree", "remove", str(old_worktree)])
+        binding.managed_branch = self._source_branch()
+        binding.worktree_path = str(source_root)
+        binding.head_commit = source_head
+        binding.sync_state = "clean"
+        binding.updated_at = time.time()
         self.store.save_binding(binding)
         return binding
 
@@ -769,8 +1064,16 @@ class GitLaneManager:
             )
         except AgentError:
             return "unavailable"
-        if branch_head != binding.head_commit or worktree_head != binding.head_commit:
+        if branch_head != worktree_head:
             return "out_of_sync"
+        if branch_head != binding.head_commit:
+            # Git 是最终事实来源：用户直接在该 Lane 的 worktree 中提交后，
+            # 只要 branch ref 与 worktree HEAD 一致，就吸收这个新检查点。
+            # 这样后续 CodeMate 自动提交可以继续沿着同一分支工作；若二者不一致，
+            # 仍然保留 out_of_sync，避免覆盖外部的分支移动或 detached HEAD。
+            binding.head_commit = branch_head
+            binding.updated_at = time.time()
+            self.store.save_binding(binding)
         return "dirty" if changed_paths else "clean"
 
     def _require_consistent(self, binding: LaneCodeBinding) -> None:
@@ -931,6 +1234,38 @@ class GitLaneManager:
         result = self._run_raw(command, check=False, input_text=input_text)
         if check and result.returncode != 0:
             self._raise_git_error(result)
+        return result
+
+    def _git_bytes(
+        self,
+        args: list[str],
+        cwd: Optional[Path] = None,
+        *,
+        check: bool = True,
+        input_bytes: Optional[bytes] = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        self._require_enabled()
+        command = ["git", "-C", str(cwd or self.repository_root), *args]
+        try:
+            result = subprocess.run(
+                command,
+                input=input_bytes,
+                capture_output=True,
+                shell=False,
+            )
+        except OSError as exc:
+            raise AgentError(
+                message=f"Failed to execute Git: {exc}",
+                code=CODE_GIT_OPERATION_FAILED,
+            ) from exc
+        if check and result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            stdout = result.stdout.decode("utf-8", errors="replace").strip()
+            raise AgentError(
+                message=stderr or stdout or "Git command failed",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"returncode": result.returncode},
+            )
         return result
 
     @staticmethod

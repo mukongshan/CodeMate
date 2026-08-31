@@ -139,6 +139,37 @@ class TestSessionAPI:
         data = response.json()
         assert "error" in data
 
+    def test_agent_is_bound_to_the_active_lane_workspace(self, test_app, temp_dir):
+        repo = temp_dir / "agent-repo"
+        repo.mkdir()
+        import subprocess
+
+        def run_git(*args):
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        run_git("init")
+        run_git("config", "user.name", "Test User")
+        run_git("config", "user.email", "test@example.com")
+        (repo / "main.txt").write_text("main\n", encoding="utf-8")
+        run_git("add", "main.txt")
+        run_git("commit", "-m", "initial")
+
+        runtime = test_app.state.session_manager.create("agent-lane", str(repo))
+        payload = runtime.create_lane("feature", None)
+        workspace = Path(payload["git"]["workspace"])
+        agent = runtime.build_agent("feature")
+
+        assert agent.workspace == workspace.resolve()
+        assert agent.provider.lane == "feature"
+        assert agent.tool_registry.get_tool("read_file").workspace == workspace.resolve()
+        assert str(workspace.resolve()) in (agent.system_prompt or "")
+        assert "用户主仓库目录" in (agent.system_prompt or "")
+
     def test_delete_session(self, client):
         """测试删除会话。"""
         # 创建会话
@@ -391,7 +422,7 @@ class TestGitLaneAPI:
         snapshot = client.get("/api/sessions/git-lanes").json()
         main = next(item for item in snapshot["lanes"] if item["lane"] == "main")
         main_workspace = Path(main["git"]["workspace"])
-        assert main_workspace != repo
+        assert main_workspace == repo.resolve()
         assert main_workspace.exists()
 
         (main_workspace / "app.py").write_text("value = 'main'\n", encoding="utf-8")
@@ -431,7 +462,7 @@ class TestGitLaneAPI:
         assert file_diff.status_code == 200
         assert "value = 'main'" in file_diff.json()["diff"]
         assert "value = 'feature'" in file_diff.json()["diff"]
-        assert (repo / "app.py").read_text(encoding="utf-8") == "value = 'base'\n"
+        assert (repo / "app.py").read_text(encoding="utf-8") == "value = 'main'\n"
 
     def test_sensitive_file_blocks_structural_checkpoint(self, client, temp_dir):
         repo = self._create_repo(temp_dir)
@@ -482,6 +513,20 @@ class TestGitLaneAPI:
         )
         assert publish.status_code == 200
         assert publish.json()["target_branch"] == "feature/published"
+
+        (main_workspace / "app.py").write_text("value = 'published again'\n", encoding="utf-8")
+        second_checkpoint = client.post(
+            "/api/sessions/lifecycle-api/lanes/main/checkpoint",
+            json={"paths": ["app.py"]},
+        )
+        assert second_checkpoint.status_code == 200
+        republish = client.post(
+            "/api/sessions/lifecycle-api/lanes/main/publish",
+            json={"target_branch": "feature/published", "mode": "branch"},
+        )
+        assert republish.status_code == 200
+        assert republish.json()["action"] == "updated"
+        assert republish.json()["publication_count"] == 2
 
         create_lane = client.post(
             "/api/sessions/lifecycle-api/lanes",

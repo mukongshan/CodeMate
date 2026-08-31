@@ -59,6 +59,7 @@ interface AppState {
   addMessage: (message: Message) => void;
   updateMessage: (messageId: string, update: Partial<Message>) => void;
   appendMessageText: (messageId: string, text: string) => void;
+  finishStreamingMessages: (removeEmpty?: boolean) => void;
 
   updateToolCall: (callId: string, update: Partial<ToolCall>) => void;
   updateSubagent: (subagentId: string, update: Partial<SubAgent>) => void;
@@ -111,22 +112,28 @@ export const useStore = create<AppState>((set) => ({
 
   // Actions
   setSession: (sessionId, data) =>
-    set((state) => ({
-      sessionId,
-      workspace: data.workspace || '',
-      commandAllowlist: data.command_allowlist || [],
-      currentLane: data.current_lane || 'main',
-      lanes: data.lanes || [],
-      agentState: data.agent_state || 'idle',
-      isRunning: data.is_running || false,
-      entries: data.entries || [],
-      messages: state.sessionId === sessionId ? state.messages : [],
-      toolCalls: state.sessionId === sessionId ? state.toolCalls : new Map(),
-      subagents: state.sessionId === sessionId ? state.subagents : new Map(),
-      selectedNodeId: null,
-      permissionRequest: null,
-      runtimeError: null,
-    })),
+    set((state) => {
+      const nextLane = data.current_lane || 'main';
+      const sameSession = state.sessionId === sessionId;
+      const laneChanged = sameSession && state.currentLane !== nextLane;
+      const resetTransient = !sameSession || laneChanged;
+      return {
+        sessionId,
+        workspace: data.workspace || '',
+        commandAllowlist: data.command_allowlist || [],
+        currentLane: nextLane,
+        lanes: data.lanes || [],
+        agentState: data.agent_state || 'idle',
+        isRunning: data.is_running || false,
+        entries: data.entries || [],
+        messages: resetTransient ? [] : state.messages,
+        toolCalls: resetTransient ? new Map() : state.toolCalls,
+        subagents: resetTransient ? new Map() : state.subagents,
+        selectedNodeId: null,
+        permissionRequest: resetTransient ? null : state.permissionRequest,
+        runtimeError: resetTransient ? null : state.runtimeError,
+      };
+    }),
 
   clearSession: () =>
     set({
@@ -153,7 +160,19 @@ export const useStore = create<AppState>((set) => ({
       wsReconnecting: false,
     }),
 
-  setCurrentLane: (lane) => set({ currentLane: lane }),
+  setCurrentLane: (lane) =>
+    set((state) =>
+      state.currentLane === lane
+        ? { currentLane: lane }
+        : {
+            currentLane: lane,
+            messages: [],
+            toolCalls: new Map(),
+            subagents: new Map(),
+            permissionRequest: null,
+            runtimeError: null,
+          }
+    ),
   setAgentState: (state) => set({ agentState: state }),
   setIsRunning: (running) => set({ isRunning: running }),
   setCommandAllowlist: (commands) => set({ commandAllowlist: commands }),
@@ -186,6 +205,15 @@ export const useStore = create<AppState>((set) => ({
           ? { ...msg, content: msg.content + text }
           : msg
       ),
+    })),
+
+  finishStreamingMessages: (removeEmpty = false) =>
+    set((state) => ({
+      messages: state.messages
+        .filter((message) => !(removeEmpty && message.is_streaming && !message.content.trim()))
+        .map((message) =>
+          message.is_streaming ? { ...message, is_streaming: false } : message
+        ),
     })),
 
   updateToolCall: (callId, update) =>

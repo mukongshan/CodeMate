@@ -88,6 +88,7 @@ describe('useWebSocket', () => {
     act(() => {
       result.current.sendMessage('hello', 'main');
       result.current.sendPermissionResponse('perm-1', 'allow_once');
+      result.current.interruptRun();
     });
 
     expect(JSON.parse(ws.sent[0])).toEqual({
@@ -100,10 +101,13 @@ describe('useWebSocket', () => {
       request_id: 'perm-1',
       action: 'allow_once',
     });
+    expect(JSON.parse(ws.sent[2])).toEqual({ type: 'interrupt_run' });
 
     act(() => {
       ws.emit({ type: 'message_start', data: { message_id: 'm1' } });
       ws.emit({ type: 'text_delta', data: { message_id: 'm1', text: 'Hello' } });
+      ws.emit({ type: 'node_added', data: { id: 'entry-m1', message_id: 'm1', role: 'assistant' } });
+      ws.emit({ type: 'message_end', data: { message_id: 'm1', stop_reason: 'stop' } });
       ws.emit({ type: 'tool_call_start', data: { call_id: 'c1', tool_name: 'read_file', args: { path: 'a.txt' } } });
       ws.emit({ type: 'tool_call_end', data: { call_id: 'c1', status: 'success', result: 'ok' } });
       ws.emit({ type: 'subagent_started', data: { subagent_id: 'sub-1', task: 'inspect', max_steps: 8, status: 'pending' } });
@@ -118,6 +122,7 @@ describe('useWebSocket', () => {
     });
 
     expect(useStore.getState().messages).toHaveLength(1);
+    expect(useStore.getState().messages[0].message_id).toBe('entry-m1');
     expect(useStore.getState().messages[0].content).toBe('Hello');
     expect(useStore.getState().toolCalls.get('c1')?.status).toBe('success');
     expect(useStore.getState().subagents.get('sub-1')).toMatchObject({
@@ -126,7 +131,7 @@ describe('useWebSocket', () => {
       tool_name: 'grep',
       content: 'done',
     });
-    expect(useStore.getState().permissionRequest?.request_id).toBe('p1');
+    expect(useStore.getState().permissionRequest).toBeNull();
     expect(useStore.getState().agentState).toBe('executing_tool');
     expect(useStore.getState().runtimeError?.message).toBe('boom');
     expect(useStore.getState().toasts.at(-1)?.message).toBe('boom');
@@ -141,6 +146,19 @@ describe('useWebSocket', () => {
       ws.emit({ type: 'run_completed', data: { run_id: 'r2', status: 'completed', iterations: 1, total_tokens: 1, duration: 0.1 } });
     });
     expect(useStore.getState().isRunning).toBe(false);
+
+    act(() => {
+      ws.emit({ type: 'run_started', data: { run_id: 'r3', lane: 'main' } });
+      ws.emit({ type: 'message_start', data: { message_id: 'm2' } });
+      ws.emit({ type: 'text_delta', data: { message_id: 'm2', text: 'partial' } });
+      ws.emit({ type: 'run_completed', data: { run_id: 'r3', status: 'aborted', iterations: 1, total_tokens: 2, duration: 0.1 } });
+    });
+    expect(useStore.getState().isRunning).toBe(false);
+    expect(useStore.getState().messages.at(-1)).toMatchObject({
+      content: 'partial',
+      is_streaming: false,
+    });
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('已中断当前回复');
 
     act(() => {
       ws.close();

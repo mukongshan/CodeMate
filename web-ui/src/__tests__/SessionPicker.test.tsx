@@ -78,4 +78,24 @@ describe('SessionPicker', () => {
     await waitFor(() => expect(useStore.getState().sessionId).toBe('created-session'));
     expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.objectContaining({ method: 'POST' }));
   });
+
+  it('keeps workspace controls visible while sessions scroll independently', async () => {
+    const sessions = Array.from({ length: 30 }, (_, index) => ({
+      session_id: 'session-' + index,
+      updated_at: index + 1,
+      loaded: false,
+      workspace: 'D:/workspace/project-' + index,
+    }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sessions }),
+    }) as any);
+
+    render(<SessionPicker />);
+
+    expect(await screen.findByText('session-29')).toBeInTheDocument();
+    expect(screen.getByText('工作区目录')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '+ 创建工作区' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '会话列表' })).toHaveClass('overflow-y-auto');
+  });
 });

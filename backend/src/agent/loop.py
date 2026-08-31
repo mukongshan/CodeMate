@@ -113,6 +113,13 @@ class Agent:
         }
         return labels.get(state)
 
+    @staticmethod
+    def _clear_cancel_request() -> None:
+        task = asyncio.current_task()
+        if task is not None and hasattr(task, "uncancel"):
+            while task.cancelling():
+                task.uncancel()
+
     # --- 主循环 -------------------------------------------------------------
 
     async def run(
@@ -145,6 +152,31 @@ class Agent:
                     )
 
             result = await self._iterate(ctx, limit, started)
+            await self._emit(
+                "run_completed",
+                {
+                    "run_id": ctx.run_id,
+                    "status": result.status,
+                    "iterations": result.iterations,
+                    "total_tokens": result.total_tokens,
+                    "duration": result.duration,
+                },
+            )
+            await self._set_state(AgentState.IDLE)
+            return result
+
+        except asyncio.CancelledError as exc:
+            self._clear_cancel_request()
+            reason = str(exc) or "运行已中断"
+            result = RunResult(
+                run_id=ctx.run_id,
+                status="aborted",
+                iterations=ctx.iteration,
+                total_tokens=ctx.total_tokens,
+                duration=time.time() - started,
+                error=reason,
+                touched_paths=list(self.touched_paths),
+            )
             await self._emit(
                 "run_completed",
                 {
@@ -236,29 +268,52 @@ class Agent:
                 "input_tokens": sum(len(m.content or "") // 4 for m in messages)
             })
 
-            async for event in self.llm_client.chat(messages, tools or None):
-                if isinstance(event, TextDeltaEvent):
-                    text_parts.append(event.text)
-                    await self._emit(
-                        "text_delta", {"message_id": message_id, "text": event.text}
-                    )
-                elif isinstance(event, ToolCallEvent):
-                    tool_calls.append(
-                        ToolCall(
-                            id=event.id or f"call_{ctx.iteration}_{len(tool_calls)}",
-                            name=event.name,
-                            arguments=event.arguments,
+            try:
+                async for event in self.llm_client.chat(messages, tools or None):
+                    if isinstance(event, TextDeltaEvent):
+                        text_parts.append(event.text)
+                        await self._emit(
+                            "text_delta", {"message_id": message_id, "text": event.text}
                         )
+                    elif isinstance(event, ToolCallEvent):
+                        tool_calls.append(
+                            ToolCall(
+                                id=event.id or f"call_{ctx.iteration}_{len(tool_calls)}",
+                                name=event.name,
+                                arguments=event.arguments,
+                            )
+                        )
+                    elif isinstance(event, DoneEvent):
+                        stop_reason = event.stop_reason
+                        ctx.total_tokens += int(event.usage.get("total_tokens") or 0)
+                        # 记录 LLM 响应
+                        await self._emit("llm_response", {
+                            "stop_reason": stop_reason,
+                            "output_tokens": int(event.usage.get("completion_tokens") or 0),
+                            "total_tokens": int(event.usage.get("total_tokens") or 0)
+                        })
+            except asyncio.CancelledError:
+                self._clear_cancel_request()
+                assistant_text = "".join(text_parts)
+                if assistant_text:
+                    interrupted_id = await self._append_assistant(
+                        Message(role="assistant", content=assistant_text)
                     )
-                elif isinstance(event, DoneEvent):
-                    stop_reason = event.stop_reason
-                    ctx.total_tokens += int(event.usage.get("total_tokens") or 0)
-                    # 记录 LLM 响应
-                    await self._emit("llm_response", {
-                        "stop_reason": stop_reason,
-                        "output_tokens": int(event.usage.get("completion_tokens") or 0),
-                        "total_tokens": int(event.usage.get("total_tokens") or 0)
-                    })
+                    if interrupted_id:
+                        await self._emit(
+                            "node_added",
+                            {
+                                "id": interrupted_id,
+                                "role": "assistant",
+                                "lane": ctx.lane,
+                                "message_id": message_id,
+                            },
+                        )
+                await self._emit(
+                    "message_end",
+                    {"message_id": message_id, "stop_reason": "interrupted"},
+                )
+                raise
 
             assistant_text = "".join(text_parts)
             if assistant_text:
@@ -300,7 +355,25 @@ class Agent:
                 )
 
             await self._set_state(AgentState.EXECUTING_TOOL)
-            blocks = await self._execute_tool_calls(tool_calls, ctx)
+            try:
+                blocks = await self._execute_tool_calls(tool_calls, ctx)
+            except asyncio.CancelledError:
+                self._clear_cancel_request()
+                blocks = [
+                    ToolResultBlock(
+                        tool_call_id=call.id,
+                        content="用户已中断本次运行，工具调用未完成。",
+                        is_error=True,
+                    )
+                    for call in tool_calls
+                ]
+                tool_node_id = await self._append_tool_results(blocks)
+                if tool_node_id:
+                    await self._emit(
+                        "node_added",
+                        {"id": tool_node_id, "role": "tool", "lane": ctx.lane},
+                    )
+                raise
 
             # 关键：N 个工具结果打包成一条消息，不是 N 条
             tool_node_id = await self._append_tool_results(blocks)
@@ -422,6 +495,18 @@ class Agent:
                 content=result.to_llm_text(),
                 is_error=result.is_error,
             )
+
+        except asyncio.CancelledError:
+            self._clear_cancel_request()
+            await self._emit(
+                "tool_call_end",
+                {
+                    "call_id": call.id,
+                    "status": "error",
+                    "result": "本次运行已中断，工具调用未完成。",
+                },
+            )
+            raise
 
         except (ToolExecutionError, ValidationError) as exc:
             logger.warning("工具 %s 执行失败: %s", call.name, exc.message)

@@ -125,14 +125,14 @@ export default function SessionPicker() {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center bg-surface-1">
-      <div className="w-full max-w-2xl p-8">
-        <div className="mb-8 text-center">
+    <div className="flex h-screen overflow-hidden bg-surface-1 p-4 sm:p-6">
+      <div className="mx-auto flex h-full min-h-0 w-full max-w-2xl flex-col">
+        <div className="mb-5 shrink-0 text-center sm:mb-6">
           <h1 className="mb-2 text-2xl font-semibold">◈ CodeMate</h1>
           <p className="text-text-secondary">选择会话或创建工作区</p>
         </div>
 
-        <div className="mb-5 rounded-md border border-border bg-surface-2 p-4">
+        <div className="mb-4 shrink-0 rounded-md border border-border bg-surface-2 p-4 shadow-card">
           <label className="mb-2 block text-sm font-medium">工作区目录</label>
           <div className="flex gap-2">
             <input
@@ -152,47 +152,58 @@ export default function SessionPicker() {
               {pickingDirectory ? '选择中...' : '浏览'}
             </button>
           </div>
+
+          <button
+            onClick={createSession}
+            disabled={creating || pickingDirectory}
+            className="mt-3 w-full rounded-md bg-accent py-2.5 text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {creating ? '创建中...' : '+ 创建工作区'}
+          </button>
         </div>
 
-        <div className="mb-6 space-y-3">
+        <div className="flex min-h-0 flex-1 flex-col">
           {error && (
-            <div className="rounded-md border border-status-error bg-red-50 p-3 text-sm text-status-error">
+            <div className="mb-3 shrink-0 rounded-md border border-status-error bg-red-50 p-3 text-sm text-status-error">
               {error}
             </div>
           )}
 
-          {sessions.length === 0 ? (
-            <div className="py-12 text-center text-text-muted">
-              暂无会话，选择工作区目录后创建
-            </div>
-          ) : (
-            sessions.map((session) => (
-              <button
-                key={session.session_id}
-                onClick={() => loadSessionData(session.session_id)}
-                className="w-full rounded-md bg-surface-2 p-4 text-left transition-colors hover:bg-surface-3"
-              >
-                <div className="mb-1 font-mono text-sm">{session.session_id}</div>
-                {session.workspace && (
-                  <div className="mb-1 truncate font-mono text-xs text-text-secondary">
-                    {session.workspace}
-                  </div>
-                )}
-                <div className="text-xs text-text-secondary">
-                  更新于 {new Date(session.updated_at * 1000).toLocaleString()}
-                </div>
-              </button>
-            ))
-          )}
-        </div>
+          <div className="mb-2 flex shrink-0 items-center justify-between">
+            <h2 className="text-sm font-medium">最近会话</h2>
+            <span className="text-xs text-text-muted">{sessions.length} 个</span>
+          </div>
 
-        <button
-          onClick={createSession}
-          disabled={creating || pickingDirectory}
-          className="w-full rounded-md bg-accent py-3 text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {creating ? '创建中...' : '+ 创建工作区'}
-        </button>
+          <div
+            role="region"
+            aria-label="会话列表"
+            className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
+          >
+            {sessions.length === 0 ? (
+              <div className="flex h-full min-h-28 items-center justify-center rounded-md border border-dashed border-border text-center text-text-muted">
+                暂无会话，选择工作区目录后创建
+              </div>
+            ) : (
+              sessions.map((session) => (
+                <button
+                  key={session.session_id}
+                  onClick={() => loadSessionData(session.session_id)}
+                  className="w-full rounded-md border border-transparent bg-surface-2 px-3 py-2.5 text-left transition-colors hover:border-border hover:bg-surface-3"
+                >
+                  <div className="mb-0.5 truncate font-mono text-sm">{session.session_id}</div>
+                  {session.workspace && (
+                    <div className="truncate font-mono text-xs text-text-secondary">
+                      {session.workspace}
+                    </div>
+                  )}
+                  <div className="mt-1 text-xs text-text-muted">
+                    更新于 {new Date(session.updated_at * 1000).toLocaleString()}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

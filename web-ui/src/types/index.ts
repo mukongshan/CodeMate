@@ -51,6 +51,10 @@ export interface LaneGitState {
   blocked_files?: Array<{ path: string; reason: string }>;
   published_branch?: string | null;
   published_commit?: string | null;
+  published_lane_head?: string | null;
+  published_mode?: 'branch' | 'squash' | null;
+  published_base_branch?: string | null;
+  publication_count?: number;
   published_at?: number | null;
   updated_at?: number;
 }
@@ -166,6 +170,7 @@ export interface ToolCall {
   args: Record<string, any>;
   status: 'pending' | 'success' | 'error';
   result?: string;
+  lane?: string;
 }
 
 // 子 Agent 状态
@@ -180,6 +185,7 @@ export interface SubAgent {
   content?: string;
   parent_run_id?: string;
   parent_lane?: string;
+  lane?: string;
   details?: {
     subagent_id?: string;
     tool_calls?: number;
@@ -216,6 +222,7 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  lane?: string;
   is_streaming?: boolean;
   tool_calls?: ToolCall[];
   subagents?: SubAgent[];

@@ -41,4 +41,35 @@ describe('store', () => {
 
     expect(useStore.getState().toolCalls.get('c1')?.status).toBe('success');
   });
+
+  it('finishes partial streaming messages and removes empty interrupted bubbles', () => {
+    useStore.setState({
+      messages: [
+        {
+          message_id: 'partial',
+          role: 'assistant',
+          content: 'partial reply',
+          timestamp: 1,
+          is_streaming: true,
+        },
+        {
+          message_id: 'empty',
+          role: 'assistant',
+          content: '',
+          timestamp: 2,
+          is_streaming: true,
+        },
+      ],
+    });
+
+    useStore.getState().finishStreamingMessages(true);
+
+    expect(useStore.getState().messages).toEqual([
+      expect.objectContaining({
+        message_id: 'partial',
+        content: 'partial reply',
+        is_streaming: false,
+      }),
+    ]);
+  });
 });

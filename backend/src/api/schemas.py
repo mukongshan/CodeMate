@@ -38,7 +38,7 @@ class PermissionResponseIn(BaseModel):
 
 
 class InterruptRunIn(BaseModel):
-    """P2 功能，先在协议里预留，首版不实现处理逻辑。"""
+    """中断当前主 Agent 运行；run_id 为空时中断本会话当前运行。"""
 
     type: Literal["interrupt_run"]
     run_id: Optional[str] = None
@@ -68,7 +68,7 @@ class PermissionRequestData(BaseModel):
 
 class SubagentDoneData(BaseModel):
     subagent_id: str
-    status: Literal["completed", "partial", "error"]
+    status: Literal["completed", "partial", "error", "cancelled", "timeout"]
     content: str
     details: dict
 

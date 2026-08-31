@@ -124,6 +124,21 @@ class DelegateTaskTool(Tool):
                 result = await asyncio.wait_for(
                     sub_agent.run(max_steps=max_steps), timeout=SUBAGENT_TIMEOUT
                 )
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and hasattr(current_task, "uncancel"):
+                while current_task.cancelling():
+                    current_task.uncancel()
+            await self._emit(
+                "subagent_done",
+                {
+                    "subagent_id": subagent_id,
+                    "status": "cancelled",
+                    "content": "父 Agent 已中断，子 Agent 调查随之取消。",
+                    "details": {"error": "父 Agent 已中断"},
+                },
+            )
+            raise
         except asyncio.TimeoutError:
             await self._emit(
                 "subagent_done",

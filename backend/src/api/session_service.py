@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from ..agent.loop import Agent
+from ..agent.prompts import MAIN_SYSTEM_PROMPT
 from ..agent.providers import TreeMessageProvider
 from ..agent.state import AgentState, RunResult
 from ..config import AppConfig
@@ -73,6 +74,9 @@ class SessionRuntime:
         self._emit: Optional[EmitFn] = None
         self._emitter_token: Optional[str] = None
         self._pending_permissions: dict[str, asyncio.Future] = {}
+        self._active_run_task: Optional[asyncio.Task] = None
+        self._active_run_id: Optional[str] = None
+        self._interrupt_requested = False
         self.state = AgentState.IDLE
 
         self.log.info(
@@ -100,6 +104,15 @@ class SessionRuntime:
         return True
 
     async def emit(self, event: str, payload: dict) -> None:
+        payload = dict(payload)
+        event_lane = payload.get("lane") or payload.get("parent_lane")
+        if event_lane is None:
+            event_lane = self.lane_manager.current_lane
+        payload.setdefault("lane", event_lane)
+        if event.startswith("subagent_"):
+            payload.setdefault("parent_lane", event_lane)
+        if event == "run_started":
+            self._active_run_id = payload.get("run_id")
         if event == "status_update":
             try:
                 self.state = AgentState(payload.get("state", "idle"))
@@ -160,6 +173,22 @@ class SessionRuntime:
     def is_running(self) -> bool:
         return self._run_lock.locked()
 
+    async def interrupt_run(self, run_id: Optional[str] = None) -> bool:
+        task = self._active_run_task
+        if task is None or task.done() or self._interrupt_requested:
+            return False
+        if run_id and self._active_run_id and run_id != self._active_run_id:
+            return False
+
+        self._interrupt_requested = True
+        await self.emit(
+            "run_interrupt_requested",
+            {"run_id": self._active_run_id, "status": "interrupting"},
+        )
+        self.fail_pending_permissions("用户已中断当前运行")
+        task.cancel("用户中断")
+        return True
+
     def build_agent(self, lane: str) -> Agent:
         if self.git_manager.enabled:
             self.git_manager.ensure_lane_ready(lane)
@@ -182,6 +211,16 @@ class SessionRuntime:
             lane=lane,
             max_context_tokens=self.config.max_context_tokens,
         )
+        system_prompt = (
+            f"{MAIN_SYSTEM_PROMPT}\n\n"
+            "## 当前执行上下文\n"
+            f"- 当前 Lane: {lane}\n"
+            f"- 当前工作目录: {workspace}\n"
+            f"- 用户主仓库目录: {self.config.workspace.resolve()}\n\n"
+            "本次任务必须在当前 Lane 的工作目录中执行。所有相对路径都相对于"
+            "当前工作目录；不要把用户主仓库目录当成当前工作目录，也不要跨 Lane"
+            "读取或修改文件。需要执行 Git 操作时，也必须在当前 Lane 工作目录中执行。"
+        )
         return Agent(
             session_id=self.session_id,
             llm_client=self.llm_client,
@@ -189,6 +228,7 @@ class SessionRuntime:
             permission_manager=self.permission_manager,
             provider=provider,
             workspace=workspace,
+            system_prompt=system_prompt,
             max_iterations=self.config.max_iterations,
             emit=self.emit,
         )
@@ -201,7 +241,7 @@ class SessionRuntime:
         async with self._run_lock:
             target_lane = lane or self.lane_manager.current_lane
             if target_lane != self.lane_manager.current_lane:
-                self.switch_lane(target_lane)
+                self.switch_lane(target_lane, allow_during_run=True)
             else:
                 self.permission_manager.set_workspace(
                     self.workspace_for_lane(target_lane)
@@ -209,7 +249,16 @@ class SessionRuntime:
 
             self.log.info("run_started", lane=target_lane, user_message=user_message[:200])
             agent = self.build_agent(target_lane)
-            result = await agent.run(user_message)
+            current_task = asyncio.current_task()
+            self._active_run_task = current_task
+            self._interrupt_requested = False
+            try:
+                result = await agent.run(user_message)
+            finally:
+                if self._active_run_task is current_task:
+                    self._active_run_task = None
+                    self._active_run_id = None
+                    self._interrupt_requested = False
             if result.status == "completed" and self.git_manager.enabled:
                 try:
                     checkpoint = self.git_manager.checkpoint(
@@ -254,6 +303,14 @@ class SessionRuntime:
 
     # --- Lane + Git coordination ------------------------------------------
 
+    def _ensure_no_active_run(self, operation: str) -> None:
+        if self.is_running:
+            raise AgentError(
+                message=f"Agent 正在运行，暂时不能{operation}",
+                code="SESSION_BUSY",
+                suggestions=["等待当前运行完成，或先中断当前运行"],
+            )
+
     def workspace_for_lane(self, lane: str) -> Path:
         return self.git_manager.active_workspace(lane)
 
@@ -274,6 +331,7 @@ class SessionRuntime:
     def create_lane(
         self, name: str, from_id: Optional[str], description: str = ""
     ) -> dict:
+        self._ensure_no_active_run("创建 Lane")
         self.lane_manager.validate_new_lane(name)
         source_lane = self.lane_manager.current_lane
         source_pointer = self.lane_manager.get_lane(source_lane)
@@ -304,7 +362,9 @@ class SessionRuntime:
             raise
         return self.lane_payload(pointer.lane)
 
-    def switch_lane(self, lane: str) -> dict:
+    def switch_lane(self, lane: str, *, allow_during_run: bool = False) -> dict:
+        if not allow_during_run:
+            self._ensure_no_active_run("切换 Lane")
         current = self.lane_manager.current_lane
         self.lane_manager.get_lane(lane)
         if self.git_manager.enabled:
@@ -316,6 +376,7 @@ class SessionRuntime:
         return self.lane_payload(pointer.lane)
 
     def delete_lane(self, lane: str) -> None:
+        self._ensure_no_active_run("删除 Lane")
         if lane == "main" or lane == self.lane_manager.current_lane:
             self.lane_manager.delete_lane(lane)
             return
@@ -331,6 +392,7 @@ class SessionRuntime:
         paths: Optional[list[str]] = None,
         allow_blocked: bool = False,
     ) -> dict:
+        self._ensure_no_active_run("创建代码检查点")
         checkpoint = self.git_manager.checkpoint(
             lane,
             reason=reason,
@@ -355,12 +417,14 @@ class SessionRuntime:
     def restore_checkpoint(
         self, lane: str, checkpoint_id: str, discard_changes: bool = False
     ) -> dict:
+        self._ensure_no_active_run("恢复代码检查点")
         self.lane_manager.get_lane(lane)
         return self.git_manager.restore_checkpoint(
             lane, checkpoint_id, discard_changes=discard_changes
         )
 
     def discard_changes(self, lane: str) -> dict:
+        self._ensure_no_active_run("丢弃代码修改")
         self.lane_manager.get_lane(lane)
         return self.git_manager.discard_changes(lane)
 
@@ -371,12 +435,14 @@ class SessionRuntime:
         mode: str = "branch",
         base_branch: Optional[str] = None,
     ) -> dict:
+        self._ensure_no_active_run("发布 Lane")
         self.lane_manager.get_lane(lane)
         return self.git_manager.publish(
             lane, target_branch, mode=mode, base_branch=base_branch
         )
 
     def archive_lane(self, lane: str) -> dict:
+        self._ensure_no_active_run("归档 Lane")
         pointer = self.lane_manager.get_lane(lane)
         if self.git_manager.enabled and not pointer.archived:
             self.git_manager.checkpoint(lane, reason="before_archive")
@@ -384,6 +450,7 @@ class SessionRuntime:
         return self.lane_payload(pointer.lane)
 
     def restore_lane(self, lane: str) -> dict:
+        self._ensure_no_active_run("恢复 Lane")
         pointer = self.lane_manager.restore_lane(lane)
         if self.git_manager.enabled:
             self.git_manager.get_binding(lane)

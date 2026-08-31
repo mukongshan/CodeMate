@@ -18,6 +18,10 @@ class LaneCodeBinding:
     last_checkpoint_id: Optional[str] = None
     published_branch: Optional[str] = None
     published_commit: Optional[str] = None
+    published_lane_head: Optional[str] = None
+    published_mode: Optional[str] = None
+    published_base_branch: Optional[str] = None
+    publication_count: int = 0
     published_at: Optional[float] = None
     updated_at: float = field(default_factory=time.time)
 
@@ -33,6 +37,10 @@ class LaneCodeBinding:
             last_checkpoint_id=data.get("last_checkpoint_id"),
             published_branch=data.get("published_branch"),
             published_commit=data.get("published_commit"),
+            published_lane_head=data.get("published_lane_head"),
+            published_mode=data.get("published_mode"),
+            published_base_branch=data.get("published_base_branch"),
+            publication_count=int(data.get("publication_count", 0)),
             published_at=(
                 float(data["published_at"])
                 if data.get("published_at") is not None
@@ -59,6 +67,10 @@ class LaneCodeBinding:
             "last_checkpoint_id": self.last_checkpoint_id,
             "published_branch": self.published_branch,
             "published_commit": self.published_commit,
+            "published_lane_head": self.published_lane_head,
+            "published_mode": self.published_mode,
+            "published_base_branch": self.published_base_branch,
+            "publication_count": self.publication_count,
             "published_at": self.published_at,
             "updated_at": self.updated_at,
         }

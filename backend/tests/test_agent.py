@@ -1,5 +1,6 @@
 """测试 Agent 主循环。"""
 
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
@@ -91,6 +92,95 @@ class TestAgentLoop:
         assert result.status == "partial"
         assert result.iterations == 3
         assert "达到最大迭代次数" in result.error
+
+    @pytest.mark.asyncio
+    async def test_interrupt_preserves_partial_response(
+        self, mock_llm_client, mock_registry, mock_permission
+    ):
+        stream_blocked = asyncio.Event()
+        captured_events = []
+
+        async def mock_chat(*args, **kwargs):
+            yield TextDeltaEvent(text="已经生成的部分回复")
+            stream_blocked.set()
+            await asyncio.Event().wait()
+
+        async def emit(event, payload):
+            captured_events.append((event, payload))
+
+        mock_llm_client.chat = mock_chat
+        provider = EphemeralMessageProvider(seed_task="Test task")
+        agent = Agent(
+            session_id="test",
+            llm_client=mock_llm_client,
+            tool_registry=mock_registry,
+            permission_manager=mock_permission,
+            provider=provider,
+            workspace=Path("."),
+            emit=emit,
+        )
+
+        task = asyncio.create_task(agent.run("请回答"))
+        await stream_blocked.wait()
+        task.cancel()
+        result = await task
+
+        assert result.status == "aborted"
+        assert any(
+            message.role == "assistant" and message.content == "已经生成的部分回复"
+            for message in provider.get_context()
+        )
+        completed = [payload for event, payload in captured_events if event == "run_completed"]
+        assert len(completed) == 1
+        assert completed[0]["status"] == "aborted"
+        assert any(
+            event == "message_end" and payload["stop_reason"] == "interrupted"
+            for event, payload in captured_events
+        )
+
+    @pytest.mark.asyncio
+    async def test_interrupt_closes_pending_tool_calls(
+        self, mock_llm_client, mock_registry, mock_permission
+    ):
+        tool_started = asyncio.Event()
+
+        async def mock_chat(*args, **kwargs):
+            yield ToolCallEvent(
+                id="call-interrupt",
+                name="read_file",
+                arguments={"path": "test.txt"},
+            )
+            yield DoneEvent(stop_reason="tool_calls", usage={"total_tokens": 10})
+
+        async def blocking_execute(*args, **kwargs):
+            tool_started.set()
+            await asyncio.Event().wait()
+
+        mock_llm_client.chat = mock_chat
+        mock_registry.get_tool_schemas.return_value = [{"type": "function"}]
+        mock_registry.execute = blocking_execute
+        provider = EphemeralMessageProvider(seed_task="Test task")
+        agent = Agent(
+            session_id="test",
+            llm_client=mock_llm_client,
+            tool_registry=mock_registry,
+            permission_manager=mock_permission,
+            provider=provider,
+            workspace=Path("."),
+        )
+
+        task = asyncio.create_task(agent.run("请读取文件"))
+        await tool_started.wait()
+        task.cancel()
+        result = await task
+
+        assert result.status == "aborted"
+        tool_messages = [
+            message for message in provider.get_context() if message.role == "tool"
+        ]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].tool_call_id == "call-interrupt"
+        assert "用户已中断" in (tool_messages[0].content or "")
 
 
 if __name__ == "__main__":

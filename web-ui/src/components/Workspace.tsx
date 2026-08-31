@@ -10,11 +10,13 @@ import WorkspaceFileViewer from './modals/WorkspaceFileViewer';
 interface WorkspaceProps {
   sendMessage: (content: string, lane?: string) => void;
   sendPermissionResponse: (requestId: string, action: string) => void;
+  interruptRun: () => boolean;
 }
 
 export default function Workspace({
   sendMessage,
   sendPermissionResponse,
+  interruptRun,
 }: WorkspaceProps) {
   const { permissionRequest, showCompareDrawer, showWorkspaceFiles } = useStore();
   const [splitRatio, setSplitRatio] = useState(40); // 左侧占比
@@ -63,7 +65,7 @@ export default function Workspace({
 
         {/* 右侧：对话面板 */}
         <div className="flex-1 min-w-0">
-          <ConversationPanel sendMessage={sendMessage} />
+          <ConversationPanel sendMessage={sendMessage} interruptRun={interruptRun} />
         </div>
       </div>
 

@@ -9,7 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from ..errors.types import AgentError
-from .schemas import PermissionResponseIn, SendMessageIn, WSEnvelope
+from .schemas import InterruptRunIn, PermissionResponseIn, SendMessageIn, WSEnvelope
 from .session_service import SessionManager, SessionRuntime
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         logger.exception("Unexpected WebSocket handler error: session=%s", session_id)
     finally:
         for task in list(active_tasks):
-            task.cancel()
+            task.cancel("连接已断开")
         if active_tasks:
             await asyncio.gather(*active_tasks, return_exceptions=True)
         if runtime.clear_emitter(connection_id):
@@ -76,6 +76,8 @@ async def _handle_message(runtime: SessionRuntime, message: dict):
         return asyncio.create_task(_handle_send_message(runtime, message))
     elif msg_type == "permission_response":
         _handle_permission_response(runtime, message)
+    elif msg_type == "interrupt_run":
+        await _handle_interrupt_run(runtime, message)
     else:
         logger.warning("Unknown websocket message type: %s", msg_type)
     return None
@@ -120,6 +122,24 @@ def _handle_permission_response(runtime: SessionRuntime, message: dict):
     matched = runtime.resolve_permission(data.request_id, data.action)
     if not matched:
         logger.warning("Permission request not found: %s", data.request_id)
+
+
+async def _handle_interrupt_run(runtime: SessionRuntime, message: dict) -> None:
+    try:
+        data = InterruptRunIn(**message)
+    except Exception as exc:
+        await runtime.emit(
+            "error",
+            {"code": "INVALID_REQUEST", "message": f"invalid interrupt payload: {exc}"},
+        )
+        return
+
+    interrupted = await runtime.interrupt_run(data.run_id)
+    if not interrupted:
+        await runtime.emit(
+            "run_interrupt_rejected",
+            {"code": "NO_ACTIVE_RUN", "message": "当前没有可中断的 Agent 运行"},
+        )
 
 
 async def _emit(

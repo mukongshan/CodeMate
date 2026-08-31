@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from src.api.session_service import SessionRuntime
 from src.api.ws import _handle_message
 from src.agent.providers import Message, TreeMessageProvider
 from src.storage.lane_manager import LaneManager
@@ -16,6 +18,7 @@ class FakeRuntime:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict]] = []
         self.run_count = 0
+        self.interrupt_count = 0
 
     async def emit(self, event: str, payload: dict) -> None:
         self.events.append((event, payload))
@@ -43,6 +46,10 @@ class FakeRuntime:
     def resolve_permission(self, request_id: str, action: str) -> bool:
         return False
 
+    async def interrupt_run(self, run_id: str | None = None) -> bool:
+        self.interrupt_count += 1
+        return True
+
 
 class TestWebSocketContracts:
     @pytest.mark.asyncio
@@ -58,6 +65,46 @@ class TestWebSocketContracts:
         run_completed = [event for event, _ in runtime.events if event == "run_completed"]
         assert runtime.run_count == 1
         assert len(run_completed) == 1
+
+    @pytest.mark.asyncio
+    async def test_interrupt_message_targets_current_run(self):
+        runtime = FakeRuntime()
+
+        task = await _handle_message(runtime, {"type": "interrupt_run"})
+
+        assert task is None
+        assert runtime.interrupt_count == 1
+
+    @pytest.mark.asyncio
+    async def test_runtime_interrupt_cancels_active_task_once(self):
+        runtime = SessionRuntime.__new__(SessionRuntime)
+        events = []
+        permission_failures = []
+
+        async def emit(event, payload):
+            events.append((event, payload))
+
+        async def wait_forever():
+            await asyncio.Event().wait()
+
+        active_task = asyncio.create_task(wait_forever())
+        runtime._active_run_task = active_task
+        runtime._active_run_id = "run-1"
+        runtime._interrupt_requested = False
+        runtime.emit = emit
+        runtime.fail_pending_permissions = permission_failures.append
+
+        accepted = await runtime.interrupt_run("run-1")
+        duplicate = await runtime.interrupt_run("run-1")
+
+        assert accepted is True
+        assert duplicate is False
+        assert permission_failures == ["用户已中断当前运行"]
+        assert events == [
+            ("run_interrupt_requested", {"run_id": "run-1", "status": "interrupting"})
+        ]
+        with pytest.raises(asyncio.CancelledError, match="用户中断"):
+            await active_task
 
 
 class TestBashToolContracts:
