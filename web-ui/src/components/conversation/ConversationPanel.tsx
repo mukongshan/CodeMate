@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { Send } from 'lucide-react';
+import { AlertTriangle, Send, X } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
 import { getLaneConversation } from '../../utils/history';
@@ -10,7 +10,17 @@ interface ConversationPanelProps {
 }
 
 export default function ConversationPanel({ sendMessage }: ConversationPanelProps) {
-  const { entries, lanes, messages, currentLane, isRunning, toolCalls, addMessage } = useStore();
+  const {
+    entries,
+    lanes,
+    messages,
+    currentLane,
+    isRunning,
+    toolCalls,
+    runtimeError,
+    addMessage,
+    clearRuntimeError,
+  } = useStore();
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -64,6 +74,39 @@ export default function ConversationPanel({ sendMessage }: ConversationPanelProp
     <div className="h-full flex flex-col bg-surface-1">
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {runtimeError && (
+          <div className="rounded-md border border-status-error bg-red-50 p-3 text-sm text-status-error">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">{runtimeError.title}</div>
+                <div className="mt-1 whitespace-pre-wrap break-words text-red-700">
+                  {runtimeError.message}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-red-700">
+                  {runtimeError.code && <span>错误码: {runtimeError.code}</span>}
+                  {runtimeError.retryable && <span>可重试</span>}
+                </div>
+                {runtimeError.suggestions && runtimeError.suggestions.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-red-700">
+                    {runtimeError.suggestions.map((suggestion) => (
+                      <li key={suggestion}>{suggestion}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={clearRuntimeError}
+                className="rounded p-1 hover:bg-red-100"
+                title="关闭错误提示"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {displayMessages.length === 0 && (
           <div className="h-full flex items-center justify-center text-sm text-text-muted">
             当前分支暂无对话

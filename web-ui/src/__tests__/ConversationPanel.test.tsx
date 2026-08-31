@@ -38,6 +38,14 @@ describe('ConversationPanel', () => {
         },
       ],
       toolCalls: new Map(),
+      runtimeError: {
+        title: 'Agent 运行失败',
+        message: 'LLM API unavailable',
+        code: 'LLM_API_ERROR',
+        retryable: true,
+        suggestions: ['检查 API Key'],
+        source: 'agent',
+      },
     } as any);
 
     const user = userEvent.setup();
@@ -50,5 +58,8 @@ describe('ConversationPanel', () => {
     expect(screen.getByText('hello')).toBeInTheDocument();
     expect(screen.getByText('new message')).toBeInTheDocument();
     expect(screen.getByText('streaming reply')).toBeInTheDocument();
+    expect(screen.getByText('Agent 运行失败')).toBeInTheDocument();
+    expect(screen.getByText('LLM API unavailable')).toBeInTheDocument();
+    expect(screen.getByText('错误码: LLM_API_ERROR')).toBeInTheDocument();
   });
 });

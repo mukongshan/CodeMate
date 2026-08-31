@@ -7,6 +7,7 @@ import type {
   ToolCall,
   SubAgent,
   PermissionRequest,
+  RuntimeErrorNotice,
   Toast,
 } from '../types';
 
@@ -39,6 +40,7 @@ interface AppState {
   showCompareDrawer: boolean;
   compareLanes: [string, string] | null;
   permissionRequest: PermissionRequest | null;
+  runtimeError: RuntimeErrorNotice | null;
   toasts: Toast[];
 
   // Actions
@@ -68,6 +70,8 @@ interface AppState {
   setShowCompareDrawer: (show: boolean) => void;
   setCompareLanes: (lanes: [string, string] | null) => void;
   setPermissionRequest: (request: PermissionRequest | null) => void;
+  setRuntimeError: (error: RuntimeErrorNotice | null) => void;
+  clearRuntimeError: () => void;
 
   addToast: (toast: Omit<Toast, 'id'>) => void;
   removeToast: (id: string) => void;
@@ -98,6 +102,7 @@ export const useStore = create<AppState>((set) => ({
   showCompareDrawer: false,
   compareLanes: null,
   permissionRequest: null,
+  runtimeError: null,
   toasts: [],
 
   // Actions
@@ -116,6 +121,7 @@ export const useStore = create<AppState>((set) => ({
       subagents: new Map(),
       selectedNodeId: null,
       permissionRequest: null,
+      runtimeError: null,
     }),
 
   clearSession: () =>
@@ -137,6 +143,7 @@ export const useStore = create<AppState>((set) => ({
       showCompareDrawer: false,
       compareLanes: null,
       permissionRequest: null,
+      runtimeError: null,
       wsConnected: false,
       wsReconnecting: false,
     }),
@@ -208,6 +215,8 @@ export const useStore = create<AppState>((set) => ({
   setShowCompareDrawer: (show) => set({ showCompareDrawer: show }),
   setCompareLanes: (lanes) => set({ compareLanes: lanes }),
   setPermissionRequest: (request) => set({ permissionRequest: request }),
+  setRuntimeError: (error) => set({ runtimeError: error }),
+  clearRuntimeError: () => set({ runtimeError: null }),
 
   addToast: (toast) =>
     set((state) => ({

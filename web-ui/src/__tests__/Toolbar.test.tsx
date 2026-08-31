@@ -32,6 +32,8 @@ describe('Toolbar', () => {
         { lane: 'feature-x', leaf_id: 'node-1', seq: 2, timestamp: 2, created_from: 'root', description: 'branch' },
       ],
       agentState: 'idle',
+      wsConnected: false,
+      wsReconnecting: true,
     } as any);
 
     const user = userEvent.setup();
@@ -48,5 +50,6 @@ describe('Toolbar', () => {
 
     await user.click(screen.getByRole('button', { name: '对比' }));
     expect(useStore.getState().showCompareDrawer).toBe(true);
+    expect(screen.getByText('重连中')).toBeInTheDocument();
   });
 });

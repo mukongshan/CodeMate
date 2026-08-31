@@ -98,6 +98,15 @@ export interface PermissionRequest {
   warning: string;
 }
 
+export interface RuntimeErrorNotice {
+  title: string;
+  message: string;
+  code?: string;
+  retryable?: boolean;
+  suggestions?: string[];
+  source: 'agent' | 'connection' | 'api';
+}
+
 // 消息
 export interface Message {
   message_id: string;

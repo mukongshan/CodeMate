@@ -18,6 +18,8 @@ export function useWebSocket(sessionId: string | null) {
     updateToolCall,
     updateSubagent,
     setPermissionRequest,
+    setRuntimeError,
+    clearRuntimeError,
     addToast,
   } = useStore();
 
@@ -46,6 +48,7 @@ export function useWebSocket(sessionId: string | null) {
         if (wsRef.current !== currentWs) return;
         setWsConnected(true);
         setWsReconnecting(false);
+        clearRuntimeError();
         if (reconnectTimerRef.current !== undefined) {
           clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = undefined;
@@ -69,6 +72,12 @@ export function useWebSocket(sessionId: string | null) {
         if (wsRef.current !== currentWs) return;
         setWsConnected(false);
         setWsReconnecting(true);
+        setRuntimeError({
+          title: '后端连接已断开',
+          message: '正在自动重连，当前请求可能无法继续。',
+          retryable: true,
+          source: 'connection',
+        });
         addToast({ type: 'warning', message: 'Connection lost, reconnecting...' });
 
         if (reconnectTimerRef.current !== undefined) {
@@ -98,6 +107,8 @@ export function useWebSocket(sessionId: string | null) {
     setWsConnected,
     setWsReconnecting,
     addToast,
+    clearRuntimeError,
+    setRuntimeError,
   ]);
 
   const handleEvent = (envelope: WSEnvelope) => {
@@ -172,6 +183,7 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'run_started':
+        clearRuntimeError();
         setAgentState('preparing');
         setIsRunning(true);
         break;
@@ -204,10 +216,24 @@ export function useWebSocket(sessionId: string | null) {
 
       case 'run_error':
         setIsRunning(false);
-        addToast({ type: 'error', message: data.message || 'Run failed' });
+        setRuntimeError({
+          title: 'Agent 运行失败',
+          message: data.message || data.error || 'Run failed',
+          code: data.code,
+          retryable: Boolean(data.retryable),
+          suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+          source: 'agent',
+        });
+        addToast({ type: 'error', message: data.message || data.error || 'Run failed' });
         break;
 
       case 'error':
+        setRuntimeError({
+          title: '请求处理失败',
+          message: data.message || 'Request failed',
+          code: data.code,
+          source: 'api',
+        });
         addToast({ type: 'error', message: data.message });
         break;
 

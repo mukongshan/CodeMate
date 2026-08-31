@@ -119,6 +119,7 @@ describe('useWebSocket', () => {
     expect(useStore.getState().toolCalls.get('c1')?.status).toBe('success');
     expect(useStore.getState().permissionRequest?.request_id).toBe('p1');
     expect(useStore.getState().agentState).toBe('executing_tool');
+    expect(useStore.getState().runtimeError?.message).toBe('boom');
     expect(useStore.getState().toasts.at(-1)?.message).toBe('boom');
 
     act(() => {
@@ -130,5 +131,12 @@ describe('useWebSocket', () => {
       ws.emit({ type: 'run_completed', data: { run_id: 'r2', status: 'completed', iterations: 1, total_tokens: 1, duration: 0.1 } });
     });
     expect(useStore.getState().isRunning).toBe(false);
+
+    act(() => {
+      ws.close();
+    });
+    expect(useStore.getState().wsConnected).toBe(false);
+    expect(useStore.getState().wsReconnecting).toBe(true);
+    expect(useStore.getState().runtimeError?.source).toBe('connection');
   });
 });

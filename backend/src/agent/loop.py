@@ -165,8 +165,11 @@ class Agent:
                 "run_error",
                 {
                     "run_id": ctx.run_id,
+                    "code": exc.code,
+                    "message": exc.message,
                     "error": exc.message,
                     "retryable": getattr(exc, "retryable", False),
+                    "suggestions": getattr(exc, "suggestions", []),
                 },
             )
             return RunResult(
@@ -183,7 +186,14 @@ class Agent:
             await self._set_state(AgentState.ERROR)
             await self._emit(
                 "run_error",
-                {"run_id": ctx.run_id, "error": str(exc), "retryable": False},
+                {
+                    "run_id": ctx.run_id,
+                    "code": "INTERNAL_ERROR",
+                    "message": str(exc),
+                    "error": str(exc),
+                    "retryable": False,
+                    "suggestions": [],
+                },
             )
             return RunResult(
                 run_id=ctx.run_id,

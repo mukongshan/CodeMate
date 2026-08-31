@@ -19,6 +19,7 @@ export function resetStore() {
     showCompareDrawer: false,
     compareLanes: null,
     permissionRequest: null,
+    runtimeError: null,
     toasts: [],
   });
 }

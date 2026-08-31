@@ -1,6 +1,15 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { ChevronDown, Plus, GitCompare, LogOut, ShieldCheck } from 'lucide-react';
+import {
+  ChevronDown,
+  Plus,
+  GitCompare,
+  LogOut,
+  RefreshCw,
+  ShieldCheck,
+  Wifi,
+  WifiOff,
+} from 'lucide-react';
 import AgentStatusBadge from './AgentStatusBadge';
 import CreateLaneModal from '../modals/CreateLaneModal';
 import PermissionGateModal from '../modals/PermissionGateModal';
@@ -12,6 +21,8 @@ export default function Toolbar() {
     currentLane,
     lanes,
     agentState,
+    wsConnected,
+    wsReconnecting,
     setSession,
     clearSession,
     setShowCompareDrawer,
@@ -45,6 +56,18 @@ export default function Toolbar() {
     }
   };
   const activeLaneIndex = Math.max(0, lanes.findIndex(l => l.lane === currentLane));
+  const connectionLabel = wsConnected
+    ? '已连接'
+    : wsReconnecting
+      ? '重连中'
+      : '未连接';
+  const connectionIcon = wsConnected ? (
+    <Wifi className="h-4 w-4" />
+  ) : wsReconnecting ? (
+    <RefreshCw className="h-4 w-4 animate-spin" />
+  ) : (
+    <WifiOff className="h-4 w-4" />
+  );
 
   return (
     <div className="h-[52px] border-b border-border bg-surface-2 flex items-center justify-between px-4">
@@ -136,6 +159,16 @@ export default function Toolbar() {
             {workspace}
           </div>
         )}
+
+        <div
+          className={`hidden items-center gap-1.5 rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-xs md:flex ${
+            wsConnected ? 'text-status-success' : 'text-status-warning'
+          }`}
+          title="后端连接状态"
+        >
+          {connectionIcon}
+          <span>{connectionLabel}</span>
+        </div>
 
         <AgentStatusBadge state={agentState} />
 
