@@ -110,10 +110,20 @@ class ToolRegistry:
 
     @staticmethod
     def default(workspace: Path | str) -> "ToolRegistry":
-        """六个核心工具。子 Agent 工具由 Agent 层单独注册（避免循环导入）。"""
+        """注册主 Agent 的内置工具。
+
+        子 Agent 工具由 Agent 层单独注册（避免循环导入）；联网工具只访问
+        公共 HTTP(S) 资源，不获得工作区写权限。
+        """
         from .exec_tool import BashTool
-        from .file_tools import EditFileTool, ReadFileTool, WriteFileTool
+        from .file_tools import (
+            EditFileTool,
+            ListDirectoryTool,
+            ReadFileTool,
+            WriteFileTool,
+        )
         from .search_tools import GlobTool, GrepTool
+        from .web_tools import WebFetchTool, WebSearchTool
 
         ws = Path(workspace)
         registry = ToolRegistry()
@@ -122,6 +132,9 @@ class ToolRegistry:
         registry.register(EditFileTool(ws))
         registry.register(GlobTool(ws))
         registry.register(GrepTool(ws))
+        registry.register(ListDirectoryTool(ws))
+        registry.register(WebSearchTool())
+        registry.register(WebFetchTool())
         registry.register(BashTool(ws))
         return registry
 
@@ -132,12 +145,16 @@ class ToolRegistry:
         子 Agent 被定位成"侦察兵"而不是"执行者"：即使无人盯着它跑，
         风险也天然可控。
         """
-        from .file_tools import ReadFileTool
+        from .file_tools import ListDirectoryTool, ReadFileTool
         from .search_tools import GlobTool, GrepTool
+        from .web_tools import WebFetchTool, WebSearchTool
 
         ws = Path(workspace)
         registry = ToolRegistry()
         registry.register(ReadFileTool(ws))
         registry.register(GlobTool(ws))
         registry.register(GrepTool(ws))
+        registry.register(ListDirectoryTool(ws))
+        registry.register(WebSearchTool())
+        registry.register(WebFetchTool())
         return registry

@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+from src.config import DEFAULT_COMMAND_ALLOWLIST
 from src.permission.manager import PermissionManager, PermissionLevel
 from src.permission.rules import (
     inspect_command_safety,
@@ -56,6 +57,19 @@ class TestPermissionRules:
         assert is_command_allowlisted("ls && git status", allowlist)
         assert not is_command_allowlisted("ls && rm -rf output", allowlist)
         assert not is_command_allowlisted("python -c 'print(1)' | sh", allowlist)
+
+    def test_default_allowlist_covers_safe_commands_and_readonly_git(self):
+        assert is_command_allowlisted("rg -n TODO src", DEFAULT_COMMAND_ALLOWLIST)
+        assert is_command_allowlisted("git log --oneline -5", DEFAULT_COMMAND_ALLOWLIST)
+        assert is_command_allowlisted(
+            "git branch --show-current", DEFAULT_COMMAND_ALLOWLIST
+        )
+        assert not is_command_allowlisted(
+            "git branch -d old-branch", DEFAULT_COMMAND_ALLOWLIST
+        )
+        assert not is_command_allowlisted(
+            "git remote add origin https://example.com", DEFAULT_COMMAND_ALLOWLIST
+        )
 
     def test_command_safety_rejects_workspace_escape(self, tmp_path):
         outside = tmp_path.parent / "outside.txt"

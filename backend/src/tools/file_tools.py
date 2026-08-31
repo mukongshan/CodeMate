@@ -167,6 +167,86 @@ class ReadFileTool(_WorkspaceTool):
         )
 
 
+class ListDirectoryTool(_WorkspaceTool):
+    name = "list_directory"
+    description = (
+        "列出工作目录内指定目录的直接子项，返回名称、类型和大小。"
+        "不会递归，也不会访问工作目录外的路径。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "目录路径（相对于工作目录），默认是工作目录根目录",
+            },
+            "include_hidden": {
+                "type": "boolean",
+                "description": "是否包含以 . 开头的隐藏项，默认 false",
+            },
+        },
+        "required": [],
+    }
+
+    async def execute(  # type: ignore[override]
+        self, path: str = ".", include_hidden: bool = False
+    ) -> ToolResult:
+        target, err = self._resolve(path or ".")
+        if err is not None:
+            return err
+        assert target is not None
+        return await asyncio.to_thread(self._list, target, path or ".", include_hidden)
+
+    def _list(self, target: Path, original: str, include_hidden: bool) -> ToolResult:
+        if not target.exists():
+            return ToolResult.error(
+                f"目录不存在: {original}",
+                suggestions=["使用 glob 工具查找可用路径"],
+            )
+        if not target.is_dir():
+            return ToolResult.error(
+                f"不是目录: {original}",
+                suggestions=["把 path 改成目录路径，或使用 read_file 读取文件"],
+            )
+
+        try:
+            entries = sorted(
+                (
+                    entry
+                    for entry in target.iterdir()
+                    if include_hidden or not entry.name.startswith(".")
+                ),
+                key=lambda entry: (not entry.is_dir(), entry.name.lower()),
+            )
+        except OSError as exc:
+            return ToolResult.error(f"列出目录失败: {exc}")
+
+        if not entries:
+            return ToolResult.ok(
+                f"目录为空: {original}", path=self._rel(target), total=0
+            )
+
+        lines: list[str] = []
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    kind = "目录"
+                    size = "-"
+                else:
+                    kind = "文件"
+                    size = str(entry.stat().st_size)
+            except OSError:
+                kind, size = "不可访问", "-"
+            lines.append(f"{entry.name}\t{kind}\t{size}")
+
+        return ToolResult.ok(
+            f"{self._rel(target)} 下有 {len(entries)} 个直接子项（名称\\t类型\\t字节数）:\n"
+            + "\n".join(lines),
+            path=self._rel(target),
+            total=len(entries),
+        )
+
+
 def _number_lines(lines: list[str], start: int) -> str:
     width = len(str(start + len(lines) - 1))
     return "\n".join(
