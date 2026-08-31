@@ -95,6 +95,11 @@ class PermissionManager:
         self.ask_user_callback: Optional[Callable[[dict], Awaitable[dict]]] = None
         self.audit_log: list[dict] = []
 
+    def set_workspace(self, workspace: str | Path) -> str:
+        """Rebind path and command checks to the active Lane workspace."""
+        self.workspace = str(Path(workspace).expanduser().resolve())
+        return self.workspace
+
     async def check(self, tool_name: str, args: dict) -> PermissionDecision:
         """判定一次工具调用是否放行。
 

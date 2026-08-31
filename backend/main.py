@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
                     "code": exc.code,
                     "message": exc.message,
                     "suggestions": getattr(exc, "suggestions", []),
+                    "details": getattr(exc, "details", None),
                 }
             },
         )

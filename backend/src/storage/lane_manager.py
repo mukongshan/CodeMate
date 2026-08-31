@@ -167,6 +167,16 @@ class LaneManager:
 
     # --- 核心操作 -----------------------------------------------------------
 
+    def validate_new_lane(self, name: str) -> None:
+        """Validate a Lane before related external resources are created."""
+        validate_lane_name(name)
+        if name in self._lanes:
+            raise AgentError(
+                message=f"分支已存在: {name}",
+                code=CODE_LANE_EXISTS,
+                suggestions=["换一个分支名，或先切换到该分支"],
+            )
+
     def create_lane(
         self, name: str, from_id: Optional[str], description: str = ""
     ) -> LanePointer:
@@ -175,13 +185,7 @@ class LaneManager:
         新分支的 ``leaf_id`` 就是分叉点本身——此时它和源分支路径完全重合，
         直到在新分支上追加第一条消息才真正分叉。
         """
-        validate_lane_name(name)
-        if name in self._lanes:
-            raise AgentError(
-                message=f"分支已存在: {name}",
-                code=CODE_LANE_EXISTS,
-                suggestions=["换一个分支名，或先切换到该分支"],
-            )
+        self.validate_new_lane(name)
         pointer = LanePointer(
             lane=name,
             leaf_id=from_id,

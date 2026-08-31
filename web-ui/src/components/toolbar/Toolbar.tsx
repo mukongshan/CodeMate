@@ -56,6 +56,7 @@ export default function Toolbar() {
     }
   };
   const activeLaneIndex = Math.max(0, lanes.findIndex(l => l.lane === currentLane));
+  const activeLane = lanes[activeLaneIndex];
   const connectionLabel = wsConnected
     ? '已连接'
     : wsReconnecting
@@ -86,6 +87,18 @@ export default function Toolbar() {
               style={{ backgroundColor: laneColors[activeLaneIndex % 4] }}
             />
             <span className="text-sm font-medium">{currentLane}</span>
+            {activeLane?.git?.enabled && (
+              <span
+                className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                  activeLane.git.sync_state === 'clean'
+                    ? 'bg-green-50 text-status-success'
+                    : 'bg-amber-50 text-status-warning'
+                }`}
+                title={activeLane.git.managed_branch}
+              >
+                {activeLane.git.short_head || activeLane.git.sync_state}
+              </span>
+            )}
             <ChevronDown className="w-4 h-4 text-text-muted" />
           </button>
 

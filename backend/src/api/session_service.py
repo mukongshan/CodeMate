@@ -21,6 +21,7 @@ from ..agent.loop import Agent
 from ..agent.providers import TreeMessageProvider
 from ..agent.state import AgentState, RunResult
 from ..config import AppConfig
+from ..errors.types import AgentError
 from ..llm.client import LLMClient
 from ..observability.logger import StructuredLogger
 from ..permission.manager import PermissionManager, normalize_risk_level
@@ -28,6 +29,7 @@ from ..storage.lane_manager import LaneManager
 from ..storage.session_storage import SessionStorage
 from ..tools.registry import ToolRegistry
 from ..tools.subagent_tool import DelegateTaskTool
+from ..version_control import GitLaneManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,21 @@ class SessionRuntime:
         self.config = config
         self.storage = SessionStorage(session_id, config.data_dir)
         self.lane_manager = LaneManager(session_id, config.data_dir)
+        self.git_manager = GitLaneManager(
+            session_id=session_id,
+            source_workspace=config.workspace,
+            data_dir=config.data_dir,
+            worktree_root=config.worktree_root,
+            max_file_bytes=config.checkpoint_max_file_bytes,
+        )
+        if self.git_manager.enabled:
+            for pointer in self.lane_manager.list_lanes():
+                if not self.git_manager.has_binding(pointer.lane):
+                    self.git_manager.ensure_legacy_lane(pointer.lane)
         self.log = StructuredLogger(session_id, config.log_dir)
+        active_workspace = self.workspace_for_lane(self.lane_manager.current_lane)
         self.permission_manager = PermissionManager(
-            workspace=config.workspace,
+            workspace=active_workspace,
             config={"command_allowlist": config.command_allowlist},
         )
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
@@ -60,7 +74,9 @@ class SessionRuntime:
 
         self.log.info(
             "agent_started",
-            workspace=str(config.workspace),
+            workspace=str(active_workspace),
+            source_workspace=str(config.workspace),
+            git_enabled=self.git_manager.enabled,
             provider=config.llm.provider,
             model=config.llm.model,
         )
@@ -142,11 +158,15 @@ class SessionRuntime:
         return self._run_lock.locked()
 
     def build_agent(self, lane: str) -> Agent:
-        registry = ToolRegistry.default(self.config.workspace)
+        if self.git_manager.enabled:
+            self.git_manager.ensure_lane_ready(lane)
+        workspace = self.workspace_for_lane(lane)
+        self.permission_manager.set_workspace(workspace)
+        registry = ToolRegistry.default(workspace)
         registry.register(
             DelegateTaskTool(
                 session_id=self.session_id,
-                workspace=self.config.workspace,
+                workspace=workspace,
                 llm_client=self.llm_client,
                 permission_manager=self.permission_manager,
                 depth=0,
@@ -165,7 +185,7 @@ class SessionRuntime:
             tool_registry=registry,
             permission_manager=self.permission_manager,
             provider=provider,
-            workspace=self.config.workspace,
+            workspace=workspace,
             max_iterations=self.config.max_iterations,
             emit=self.emit,
         )
@@ -177,11 +197,48 @@ class SessionRuntime:
 
         async with self._run_lock:
             target_lane = lane or self.lane_manager.current_lane
-            self.lane_manager.switch_lane(target_lane)
+            if target_lane != self.lane_manager.current_lane:
+                self.switch_lane(target_lane)
+            else:
+                self.permission_manager.set_workspace(
+                    self.workspace_for_lane(target_lane)
+                )
 
             self.log.info("run_started", lane=target_lane, user_message=user_message[:200])
             agent = self.build_agent(target_lane)
             result = await agent.run(user_message)
+            if result.status == "completed" and self.git_manager.enabled:
+                try:
+                    checkpoint = self.git_manager.checkpoint(
+                        target_lane,
+                        reason="run_completed",
+                        conversation_entry_id=self.lane_manager.get_lane(
+                            target_lane
+                        ).leaf_id,
+                        run_id=result.run_id,
+                        run_status=result.status,
+                    )
+                    if checkpoint is not None:
+                        await self.emit(
+                            "lane_checkpoint_created",
+                            {
+                                "lane": target_lane,
+                                "checkpoint_id": checkpoint.checkpoint_id,
+                                "commit_sha": checkpoint.commit_sha,
+                                "short_head": checkpoint.commit_sha[:8],
+                                "changed_files": checkpoint.changed_files,
+                            },
+                        )
+                except Exception as exc:  # checkpoint failure must preserve the run result
+                    logger.warning("automatic checkpoint failed: %s", exc)
+                    await self.emit(
+                        "lane_sync_state_changed",
+                        {
+                            "lane": target_lane,
+                            "sync_state": "dirty",
+                            "message": str(exc),
+                        },
+                    )
             self.log.info(
                 "run_completed",
                 run_id=result.run_id,
@@ -192,6 +249,90 @@ class SessionRuntime:
             )
             return result
 
+    # --- Lane + Git coordination ------------------------------------------
+
+    def workspace_for_lane(self, lane: str) -> Path:
+        return self.git_manager.active_workspace(lane)
+
+    def lane_payload(self, lane: str) -> dict:
+        payload = self.lane_manager.get_lane(lane).to_api_dict()
+        payload["git"] = self.git_manager.lane_api(lane)
+        return payload
+
+    def list_lane_payloads(self) -> list[dict]:
+        return [self.lane_payload(item.lane) for item in self.lane_manager.list_lanes()]
+
+    def create_lane(
+        self, name: str, from_id: Optional[str], description: str = ""
+    ) -> dict:
+        self.lane_manager.validate_new_lane(name)
+        source_lane = self.lane_manager.current_lane
+        source_pointer = self.lane_manager.get_lane(source_lane)
+        if self.git_manager.enabled and from_id != source_pointer.leaf_id:
+            raise AgentError(
+                message="Git-backed Lane must branch from the current conversation head",
+                code="LANE_CODE_BASELINE_MISMATCH",
+                details={
+                    "requested_entry_id": from_id,
+                    "current_entry_id": source_pointer.leaf_id,
+                },
+                suggestions=["Switch to the desired Lane/head before creating the branch"],
+            )
+        git_created = False
+        if self.git_manager.enabled:
+            self.git_manager.create_lane(name, source_lane)
+            git_created = True
+        try:
+            pointer = self.lane_manager.create_lane(
+                name=name, from_id=from_id, description=description
+            )
+            self.lane_manager.switch_lane(name)
+            self.permission_manager.set_workspace(self.workspace_for_lane(name))
+        except Exception:
+            if git_created:
+                self.git_manager.rollback_lane_creation(name)
+            raise
+        return self.lane_payload(pointer.lane)
+
+    def switch_lane(self, lane: str) -> dict:
+        current = self.lane_manager.current_lane
+        self.lane_manager.get_lane(lane)
+        if self.git_manager.enabled:
+            self.git_manager.ensure_lane_ready(lane)
+        if lane != current and self.git_manager.enabled:
+            self.git_manager.checkpoint(current, reason="before_switch")
+        pointer = self.lane_manager.switch_lane(lane)
+        self.permission_manager.set_workspace(self.workspace_for_lane(lane))
+        return self.lane_payload(pointer.lane)
+
+    def delete_lane(self, lane: str) -> None:
+        if lane == "main" or lane == self.lane_manager.current_lane:
+            self.lane_manager.delete_lane(lane)
+            return
+        self.lane_manager.get_lane(lane)
+        if self.git_manager.enabled:
+            self.git_manager.remove_lane(lane)
+        self.lane_manager.delete_lane(lane)
+
+    def checkpoint_lane(self, lane: str, reason: str = "manual") -> dict:
+        checkpoint = self.git_manager.checkpoint(
+            lane,
+            reason=reason,
+            conversation_entry_id=self.lane_manager.get_lane(lane).leaf_id,
+        )
+        return {
+            "created": checkpoint is not None,
+            "checkpoint": checkpoint.to_dict() if checkpoint else None,
+            "lane": self.lane_payload(lane),
+        }
+
+    def compare_lanes(self, lane_a: str, lane_b: str) -> dict:
+        comparison = self.lane_manager.compare_lanes(
+            lane_a, lane_b, self.storage
+        )
+        comparison["code"] = self.git_manager.compare(lane_a, lane_b)
+        return comparison
+
     # --- 查询 ---------------------------------------------------------------
 
     def snapshot(self) -> dict:
@@ -199,12 +340,18 @@ class SessionRuntime:
         lanes = self.lane_manager.list_lanes()
         return {
             "session_id": self.session_id,
-            "workspace": str(self.config.workspace),
+            "workspace": str(self.workspace_for_lane(self.lane_manager.current_lane)),
+            "source_workspace": str(self.config.workspace),
+            "git_enabled": self.git_manager.enabled,
+            "git_disabled_reason": self.git_manager.disabled_reason,
+            "repository_root": str(self.git_manager.repository_root)
+            if self.git_manager.repository_root
+            else None,
             "current_lane": self.lane_manager.current_lane,
             "agent_state": self.state.value,
             "is_running": self.is_running,
             "command_allowlist": self.permission_manager.get_command_allowlist(),
-            "lanes": [lane.to_api_dict() for lane in lanes],
+            "lanes": [self.lane_payload(lane.lane) for lane in lanes],
             "entries": [entry.to_api_dict() for entry in self.storage.all_entries()],
         }
 
@@ -284,10 +431,13 @@ class SessionManager:
 
     def delete(self, session_id: str) -> None:
         """删除 session：从内存移除 + 删除磁盘文件。"""
-        runtime = self._sessions.pop(session_id, None)
+        runtime = self._sessions.get(session_id)
         if runtime is not None:
+            runtime.git_manager.close_worktrees()
             runtime.storage.delete_files()
             runtime.lane_manager.delete_files()
+            runtime.git_manager.delete_files()
+            self._sessions.pop(session_id, None)
         self._meta_path(session_id).unlink(missing_ok=True)
 
     def _config_for_session(

@@ -11,6 +11,8 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const currentLanePointer = lanes.find(l => l.lane === currentLane);
+  const gitState = currentLanePointer?.git;
 
   const validateName = (value: string): string | null => {
     if (!value) {
@@ -43,7 +45,6 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
 
     setCreating(true);
     try {
-      const currentLanePointer = lanes.find(l => l.lane === currentLane);
       const fromId = currentLanePointer?.leaf_id;
 
       const res = await fetch(`/api/sessions/${sessionId}/lanes`, {
@@ -116,6 +117,27 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
               当前位置 ({currentLane})
             </div>
           </div>
+
+          {gitState?.enabled ? (
+            <div className="rounded-md border border-border bg-surface-1 p-3 text-sm">
+              <div className="font-medium">代码基线</div>
+              <div className="mt-1 font-mono text-xs text-text-secondary">
+                {gitState.short_head || '尚无检查点'}
+              </div>
+              <div className="mt-2 text-xs text-text-muted">
+                创建前会保存当前安全修改，并为新 Lane 创建独立 Worktree。
+              </div>
+              {(gitState.changed_files?.length || 0) > 0 && (
+                <div className="mt-2 text-xs text-status-warning">
+                  待保存文件：{gitState.changed_files?.length}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-md border border-border bg-surface-1 p-3 text-xs text-text-muted">
+              当前工作区未启用 Git，分支仅保存对话历史。
+            </div>
+          )}
         </div>
 
         {/* 按钮 */}

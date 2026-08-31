@@ -214,6 +214,8 @@ LLM_MODEL=gpt-4o-mini
 WORKSPACE=./workspace
 DATA_DIR=./data/sessions
 LOG_DIR=./logs
+CODEMATE_WORKTREE_ROOT=  # 可选；默认 Windows 为 %LOCALAPPDATA%\CodeMate\worktrees
+CHECKPOINT_MAX_FILE_BYTES=10485760
 MAX_ITERATIONS=15
 MAX_CONTEXT_TOKENS=8000
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
@@ -230,6 +232,10 @@ DEBUG=true
 运行时数据存储在 `backend/data/sessions/` 目录：
 - `{session_id}.jsonl` - 会话的 Entry 树
 - `{session_id}_lanes.jsonl` - 会话的 Lane 指针
+- `{session_id}_git_bindings.json` - Lane 与托管 Git 分支、Worktree 的绑定
+- `{session_id}_checkpoints.ndjson` - 代码检查点与对话/Run 的映射
+
+Git 增强模式下，每个 Lane 使用外部托管目录中的独立 Worktree；用户原始工作区不会被自动 checkout、reset 或提交。托管分支仍保存在用户代码仓库的 Git 对象库中，可通过 `git branch --list "codemate/*"` 查看。
 
 日志存储在 `backend/logs/` 目录：
 - `agent.jsonl` - 结构化日志

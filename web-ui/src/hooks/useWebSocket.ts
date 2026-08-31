@@ -216,10 +216,28 @@ export function useWebSocket(sessionId: string | null) {
 
       case 'lane_created':
         addToast({ type: 'success', message: `Created lane ${data.lane}` });
+        void syncSessionSnapshot();
         break;
 
       case 'lane_switched':
         addToast({ type: 'info', message: `Switched to ${data.lane}` });
+        void syncSessionSnapshot();
+        break;
+
+      case 'lane_checkpoint_created':
+        addToast({
+          type: 'success',
+          message: `代码检查点 ${data.short_head || data.checkpoint_id} 已保存`,
+        });
+        void syncSessionSnapshot();
+        break;
+
+      case 'lane_sync_state_changed':
+        addToast({
+          type: 'warning',
+          message: data.message || `${data.lane} 存在未保存的代码修改`,
+        });
+        void syncSessionSnapshot();
         break;
 
       case 'run_error':

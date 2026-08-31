@@ -28,6 +28,7 @@ def test_app(temp_dir, monkeypatch):
     # 设置测试环境变量
     monkeypatch.setenv("DATA_DIR", str(temp_dir / "sessions"))
     monkeypatch.setenv("LOG_DIR", str(temp_dir / "logs"))
+    monkeypatch.setenv("CODEMATE_WORKTREE_ROOT", str(temp_dir / "worktrees"))
     monkeypatch.setenv("WORKSPACE", str(temp_dir / "workspace"))
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
@@ -241,6 +242,7 @@ class TestLaneAPI:
             f"/api/sessions/{session_id}/lanes",
             json={"name": "delete-test"}
         )
+        client.post(f"/api/sessions/{session_id}/lanes/main/switch")
 
         # 删除分支
         response = client.delete(f"/api/sessions/{session_id}/lanes/delete-test")
@@ -269,6 +271,107 @@ class TestLaneAPI:
         assert "common_ancestor" in data
         assert "lane_a_diff" in data
         assert "lane_b_diff" in data
+
+
+class TestGitLaneAPI:
+    @staticmethod
+    def _git(repo: Path, *args: str) -> str:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    def _create_repo(self, temp_dir: Path) -> Path:
+        repo = temp_dir / "git-workspace"
+        repo.mkdir()
+        self._git(repo, "init")
+        self._git(repo, "config", "user.name", "Test User")
+        self._git(repo, "config", "user.email", "test@example.com")
+        (repo / "app.py").write_text("value = 'base'\n", encoding="utf-8")
+        self._git(repo, "add", "app.py")
+        self._git(repo, "commit", "-m", "initial")
+        return repo
+
+    def test_git_lane_checkpoint_worktree_and_file_diff(self, client, temp_dir):
+        repo = self._create_repo(temp_dir)
+        create = client.post(
+            "/api/sessions",
+            json={"session_id": "git-lanes", "workspace": str(repo)},
+        )
+        assert create.status_code == 201
+        assert create.json()["git_enabled"] is True
+
+        snapshot = client.get("/api/sessions/git-lanes").json()
+        main = next(item for item in snapshot["lanes"] if item["lane"] == "main")
+        main_workspace = Path(main["git"]["workspace"])
+        assert main_workspace != repo
+        assert main_workspace.exists()
+
+        (main_workspace / "app.py").write_text("value = 'main'\n", encoding="utf-8")
+        create_lane = client.post(
+            "/api/sessions/git-lanes/lanes",
+            json={"name": "feature-x"},
+        )
+        assert create_lane.status_code == 201
+        feature = create_lane.json()
+        assert feature["lane"] == "feature-x"
+        assert feature["git"]["enabled"] is True
+        assert feature["git"]["workspace"] != str(main_workspace)
+        assert feature["git"]["managed_branch"] in self._git(repo, "branch", "--list")
+
+        feature_workspace = Path(feature["git"]["workspace"])
+        (feature_workspace / "app.py").write_text("value = 'feature'\n", encoding="utf-8")
+        (feature_workspace / "feature.py").write_text("enabled = True\n", encoding="utf-8")
+        checkpoint = client.post(
+            "/api/sessions/git-lanes/lanes/feature-x/checkpoint"
+        )
+        assert checkpoint.status_code == 200
+        assert checkpoint.json()["created"] is True
+
+        comparison = client.get(
+            "/api/sessions/git-lanes/lanes/compare",
+            params={"a": "main", "b": "feature-x"},
+        )
+        assert comparison.status_code == 200
+        code = comparison.json()["code"]
+        assert code["enabled"] is True
+        assert {item["path"] for item in code["files"]} == {"app.py", "feature.py"}
+
+        file_diff = client.get(
+            "/api/sessions/git-lanes/lanes/compare/file",
+            params={"a": "main", "b": "feature-x", "path": "app.py"},
+        )
+        assert file_diff.status_code == 200
+        assert "value = 'main'" in file_diff.json()["diff"]
+        assert "value = 'feature'" in file_diff.json()["diff"]
+        assert (repo / "app.py").read_text(encoding="utf-8") == "value = 'base'\n"
+
+    def test_sensitive_file_blocks_structural_checkpoint(self, client, temp_dir):
+        repo = self._create_repo(temp_dir)
+        response = client.post(
+            "/api/sessions",
+            json={"session_id": "blocked-checkpoint", "workspace": str(repo)},
+        )
+        workspace = Path(
+            client.get("/api/sessions/blocked-checkpoint").json()["workspace"]
+        )
+        (workspace / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+
+        create_lane = client.post(
+            "/api/sessions/blocked-checkpoint/lanes",
+            json={"name": "unsafe-lane"},
+        )
+        assert create_lane.status_code == 400
+        assert create_lane.json()["error"]["code"] == "CHECKPOINT_BLOCKED"
+        lanes = client.get("/api/sessions/blocked-checkpoint/lanes").json()["lanes"]
+        assert {item["lane"] for item in lanes} == {"main"}
 
 
 class TestPermissionAPI:

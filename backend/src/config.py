@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -76,6 +77,8 @@ class AppConfig:
     workspace: Path = field(default_factory=Path.cwd)
     data_dir: Path = Path("data/sessions")
     log_dir: Path = Path("logs")
+    worktree_root: Path = field(default_factory=lambda: _default_worktree_root())
+    checkpoint_max_file_bytes: int = 10 * 1024 * 1024
     command_allowlist: list[str] = field(
         default_factory=lambda: list(DEFAULT_COMMAND_ALLOWLIST)
     )
@@ -107,6 +110,12 @@ class AppConfig:
             workspace=workspace,
             data_dir=Path(os.getenv("DATA_DIR", "data/sessions")),
             log_dir=Path(os.getenv("LOG_DIR", "logs")),
+            worktree_root=Path(
+                os.getenv("CODEMATE_WORKTREE_ROOT", str(_default_worktree_root()))
+            ).expanduser().resolve(),
+            checkpoint_max_file_bytes=_int_env(
+                "CHECKPOINT_MAX_FILE_BYTES", 10 * 1024 * 1024
+            ),
             command_allowlist=_list_env(
                 "COMMAND_ALLOWLIST",
                 list(DEFAULT_COMMAND_ALLOWLIST),
@@ -124,6 +133,17 @@ class AppConfig:
             port=_int_env("PORT", 8000),
             debug=_bool_env("DEBUG", False),
         )
+
+
+def _default_worktree_root() -> Path:
+    if sys.platform == "win32":
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "CodeMate" / "worktrees"
+    xdg_data_home = os.getenv("XDG_DATA_HOME")
+    if xdg_data_home:
+        return Path(xdg_data_home) / "codemate" / "worktrees"
+    return Path.home() / ".codemate" / "worktrees"
 
 
 def _int_env(name: str, default: int) -> int:

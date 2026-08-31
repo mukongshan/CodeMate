@@ -179,6 +179,8 @@ class TestConfig:
         assert config.max_iterations == 20
         assert config.host == "127.0.0.1"
         assert config.port == 8000
+        assert config.worktree_root.is_absolute()
+        assert config.checkpoint_max_file_bytes == 10 * 1024 * 1024
 
     def test_from_env_with_api_key(self, monkeypatch):
         """测试从环境变量加载 API Key。"""

@@ -32,6 +32,54 @@ export interface LanePointer {
   timestamp: number;
   created_from: string | null;
   description: string;
+  git?: LaneGitState;
+}
+
+export interface LaneGitState {
+  enabled: boolean;
+  reason?: string;
+  managed_branch?: string;
+  worktree_path?: string;
+  workspace?: string;
+  base_commit?: string;
+  head_commit?: string;
+  short_head?: string;
+  sync_state?: 'clean' | 'dirty' | 'conflict' | 'out_of_sync' | 'unavailable';
+  last_checkpoint_id?: string | null;
+  changed_files?: string[];
+  blocked_files?: Array<{ path: string; reason: string }>;
+  updated_at?: number;
+}
+
+export interface CodeDiffFile {
+  status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | string;
+  path: string;
+  old_path?: string;
+  score?: string | null;
+}
+
+export interface LaneCodeComparison {
+  enabled: boolean;
+  reason?: string;
+  merge_base?: string;
+  identical?: boolean;
+  lane_a?: {
+    lane: string;
+    head_commit: string;
+    short_head: string;
+    managed_branch: string;
+    dirty: boolean;
+    sync_state: LaneGitState['sync_state'];
+  };
+  lane_b?: {
+    lane: string;
+    head_commit: string;
+    short_head: string;
+    managed_branch: string;
+    dirty: boolean;
+    sync_state: LaneGitState['sync_state'];
+  };
+  files: CodeDiffFile[];
 }
 
 // Agent 状态
@@ -54,6 +102,10 @@ export interface WSEnvelope {
 export interface SessionSnapshot {
   session_id: string;
   workspace: string;
+  source_workspace?: string;
+  git_enabled?: boolean;
+  git_disabled_reason?: string;
+  repository_root?: string | null;
   command_allowlist: string[];
   current_lane: string;
   agent_state: AgentState;

@@ -54,7 +54,11 @@ def create_session(
     )
     return {
         "session_id": runtime.session_id,
-        "workspace": str(runtime.config.workspace),
+        "workspace": str(
+            runtime.workspace_for_lane(runtime.lane_manager.current_lane)
+        ),
+        "source_workspace": str(runtime.config.workspace),
+        "git_enabled": runtime.git_manager.enabled,
         "current_lane": runtime.lane_manager.current_lane,
     }
 
@@ -139,7 +143,7 @@ def list_lanes(session_id: str, manager: SessionManager = Depends(get_manager)) 
     runtime = _require_session(manager, session_id)
     return {
         "current_lane": runtime.lane_manager.current_lane,
-        "lanes": [lane.to_api_dict() for lane in runtime.lane_manager.list_lanes()],
+        "lanes": runtime.list_lane_payloads(),
     }
 
 
@@ -153,11 +157,28 @@ async def create_lane(
     from_id = body.from_id
     if from_id is None:
         from_id = runtime.lane_manager.get_lane(runtime.lane_manager.current_lane).leaf_id
-    pointer = runtime.lane_manager.create_lane(
-        name=body.name, from_id=from_id, description=body.description
+    payload = runtime.create_lane(
+        name=body.name,
+        from_id=from_id,
+        description=body.description or "",
     )
-    await runtime.emit("lane_created", {"lane": pointer.lane, "from_id": pointer.created_from})
-    return pointer.to_api_dict()
+    await runtime.emit(
+        "lane_created",
+        {
+            "lane": payload["lane"],
+            "from_id": payload["created_from"],
+            "workspace": payload["git"].get("workspace"),
+        },
+    )
+    await runtime.emit(
+        "lane_switched",
+        {
+            "lane": payload["lane"],
+            "leaf_id": payload["leaf_id"],
+            "workspace": payload["git"].get("workspace"),
+        },
+    )
+    return payload
 
 
 @router.post("/sessions/{session_id}/lanes/{lane}/switch")
@@ -165,9 +186,16 @@ async def switch_lane(
     session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
 ) -> dict:
     runtime = _require_session(manager, session_id)
-    pointer = runtime.lane_manager.switch_lane(lane)
-    await runtime.emit("lane_switched", {"lane": pointer.lane, "leaf_id": pointer.leaf_id})
-    return pointer.to_api_dict()
+    payload = runtime.switch_lane(lane)
+    await runtime.emit(
+        "lane_switched",
+        {
+            "lane": payload["lane"],
+            "leaf_id": payload["leaf_id"],
+            "workspace": payload["git"].get("workspace"),
+        },
+    )
+    return payload
 
 
 @router.delete("/sessions/{session_id}/lanes/{lane}", status_code=204, response_model=None)
@@ -176,7 +204,7 @@ async def delete_lane(
 ) -> None:
     """删除分支指针，不删树中的节点。保护 main 和当前活跃分支。"""
     runtime = _require_session(manager, session_id)
-    runtime.lane_manager.delete_lane(lane)
+    runtime.delete_lane(lane)
     await runtime.emit("lane_deleted", {"lane": lane})
 
 
@@ -196,7 +224,49 @@ def compare_lanes(
                 lane=name,
                 suggestions=["使用 GET /api/sessions/{id}/lanes 查看当前所有分支"],
             )
-    return runtime.lane_manager.compare_lanes(a, b, runtime.storage)
+    return runtime.compare_lanes(a, b)
+
+
+@router.get("/sessions/{session_id}/lanes/compare/file")
+def compare_lane_file(
+    session_id: str,
+    a: str = Query(..., description="Lane A"),
+    b: str = Query(..., description="Lane B"),
+    path: str = Query(..., description="Repository-relative file path"),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    for name in (a, b):
+        if not runtime.lane_manager.has_lane(name):
+            raise LaneNotFoundError(
+                message=f"Lane not found: {name}",
+                code=CODE_LANE_NOT_FOUND,
+                lane=name,
+            )
+    return runtime.git_manager.file_diff(a, b, path)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/checkpoint")
+async def create_lane_checkpoint(
+    session_id: str,
+    lane: str,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    payload = runtime.checkpoint_lane(lane)
+    checkpoint = payload.get("checkpoint")
+    if checkpoint:
+        await runtime.emit(
+            "lane_checkpoint_created",
+            {
+                "lane": lane,
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                "commit_sha": checkpoint["commit_sha"],
+                "short_head": checkpoint["commit_sha"][:8],
+                "changed_files": checkpoint["changed_files"],
+            },
+        )
+    return payload
 
 
 # --- 权限审计 --------------------------------------------------------------
