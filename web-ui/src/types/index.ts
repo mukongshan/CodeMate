@@ -32,6 +32,7 @@ export interface LanePointer {
   timestamp: number;
   created_from: string | null;
   description: string;
+  archived?: boolean;
   git?: LaneGitState;
 }
 
@@ -48,7 +49,23 @@ export interface LaneGitState {
   last_checkpoint_id?: string | null;
   changed_files?: string[];
   blocked_files?: Array<{ path: string; reason: string }>;
+  published_branch?: string | null;
+  published_commit?: string | null;
+  published_at?: number | null;
   updated_at?: number;
+}
+
+export interface CodeCheckpoint {
+  checkpoint_id: string;
+  lane: string;
+  commit_sha: string;
+  previous_commit: string | null;
+  reason: string;
+  conversation_entry_id?: string | null;
+  run_id?: string | null;
+  run_status?: string | null;
+  changed_files: CodeDiffFile[];
+  created_at: number;
 }
 
 export interface CodeDiffFile {

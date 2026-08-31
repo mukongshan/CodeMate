@@ -107,6 +107,22 @@ class CreateLaneIn(BaseModel):
     description: Optional[str] = None
 
 
+class CheckpointIn(BaseModel):
+    paths: Optional[list[str]] = None
+    allow_blocked: bool = False
+
+
+class RestoreCheckpointIn(BaseModel):
+    checkpoint_id: str
+    discard_changes: bool = False
+
+
+class PublishLaneIn(BaseModel):
+    target_branch: str
+    mode: Literal["branch", "squash"] = "branch"
+    base_branch: Optional[str] = None
+
+
 class UpdatePermissionGateIn(BaseModel):
     command_allowlist: list[str] = Field(default_factory=list)
 

@@ -7,12 +7,14 @@ import {
   LogOut,
   RefreshCw,
   ShieldCheck,
+  Code2,
   Wifi,
   WifiOff,
 } from 'lucide-react';
 import AgentStatusBadge from './AgentStatusBadge';
 import CreateLaneModal from '../modals/CreateLaneModal';
 import PermissionGateModal from '../modals/PermissionGateModal';
+import LaneCodeManagerModal from '../modals/LaneCodeManagerModal';
 
 export default function Toolbar() {
   const {
@@ -30,6 +32,7 @@ export default function Toolbar() {
   const [showLaneDropdown, setShowLaneDropdown] = useState(false);
   const [showCreateLane, setShowCreateLane] = useState(false);
   const [showPermissionGate, setShowPermissionGate] = useState(false);
+  const [showCodeManager, setShowCodeManager] = useState(false);
 
   const laneColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'];
 
@@ -163,6 +166,15 @@ export default function Toolbar() {
           <ShieldCheck className="h-4 w-4" />
           门禁
         </button>
+
+        <button
+          onClick={() => setShowCodeManager(true)}
+          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-surface-3"
+          title="管理代码检查点、发布和 Lane 生命周期"
+        >
+          <Code2 className="h-4 w-4" />
+          代码管理
+        </button>
       </div>
 
       {/* 右侧 */}
@@ -198,6 +210,9 @@ export default function Toolbar() {
       {showCreateLane && <CreateLaneModal onClose={() => setShowCreateLane(false)} />}
       {showPermissionGate && (
         <PermissionGateModal onClose={() => setShowPermissionGate(false)} />
+      )}
+      {showCodeManager && (
+        <LaneCodeManagerModal onClose={() => setShowCodeManager(false)} />
       )}
     </div>
   );

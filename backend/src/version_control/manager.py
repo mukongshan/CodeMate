@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -56,6 +57,7 @@ class GitLaneManager:
         self.workspace_relative = Path(".")
         self.enabled = False
         self.disabled_reason = "not a Git repository"
+        self._last_operation_id: Optional[str] = None
         self._initialize_repository()
 
     def _initialize_repository(self) -> None:
@@ -111,6 +113,45 @@ class GitLaneManager:
         self.worktree_root.mkdir(parents=True, exist_ok=True)
         self._disabled_hooks_dir().mkdir(parents=True, exist_ok=True)
         self.ensure_main_lane()
+
+    @property
+    def last_operation_id(self) -> Optional[str]:
+        return self._last_operation_id
+
+    def complete_operation(self, operation_id: Optional[str]) -> None:
+        if operation_id:
+            self._record_operation(operation_id, "completed")
+
+    def reconcile_operations(self, known_lanes: set[str]) -> list[dict]:
+        latest: dict[str, dict] = {}
+        metadata: dict[str, dict] = {}
+        for record in self.store.list_operations():
+            operation_id = record.get("operation_id")
+            if operation_id:
+                latest[operation_id] = record
+                metadata.setdefault(operation_id, {}).update(
+                    {
+                        key: record[key]
+                        for key in ("operation", "lane")
+                        if key in record
+                    }
+                )
+        recovered: list[dict] = []
+        for operation_id, record in latest.items():
+            if record.get("state") in {"completed", "failed", "recovered"}:
+                continue
+            operation = metadata.get(operation_id, {}).get("operation")
+            if operation != "create_lane":
+                continue
+            lane = str(metadata.get(operation_id, {}).get("lane", ""))
+            if lane in known_lanes:
+                self._record_operation(operation_id, "recovered", {"action": "kept"})
+                recovered.append({"operation_id": operation_id, "lane": lane, "action": "kept"})
+            elif lane in self.store.bindings:
+                self.rollback_lane_creation(lane)
+                self._record_operation(operation_id, "recovered", {"action": "rolled_back"})
+                recovered.append({"operation_id": operation_id, "lane": lane, "action": "rolled_back"})
+        return recovered
 
     def ensure_main_lane(self) -> LaneCodeBinding:
         self._require_enabled()
@@ -192,10 +233,20 @@ class GitLaneManager:
         self._require_enabled()
         if lane in self.store.bindings:
             return self.get_binding(lane)
+        operation_id = f"op_{uuid.uuid4().hex[:12]}"
+        self._last_operation_id = operation_id
+        self._record_operation(operation_id, "prepared", {"operation": "create_lane", "lane": lane})
         source = self.get_binding(source_lane)
-        self.checkpoint(source_lane, reason="before_branch")
-        source = self.get_binding(source_lane)
-        return self._create_binding(lane, source.head_commit)
+        try:
+            self.checkpoint(source_lane, reason="before_branch")
+            self._record_operation(operation_id, "checkpoint_done")
+            source = self.get_binding(source_lane)
+            binding = self._create_binding(lane, source.head_commit)
+            self._record_operation(operation_id, "git_done")
+            return binding
+        except Exception as exc:
+            self._record_operation(operation_id, "failed", {"error": str(exc)})
+            raise
 
     def remove_lane(self, lane: str) -> None:
         if not self.enabled:
@@ -244,6 +295,8 @@ class GitLaneManager:
         conversation_entry_id: Optional[str] = None,
         run_id: Optional[str] = None,
         run_status: Optional[str] = None,
+        include_paths: Optional[list[str]] = None,
+        allow_blocked: bool = False,
     ) -> Optional[CodeCheckpoint]:
         if not self.enabled:
             return None
@@ -251,14 +304,30 @@ class GitLaneManager:
         worktree = Path(binding.worktree_path)
         self._require_consistent(binding)
         changed_paths = self._changed_paths(worktree)
+        selected_paths = self._select_paths(changed_paths, include_paths)
+        if include_paths is not None:
+            staged_paths = self._git_output(
+                ["diff", "--cached", "--name-only", "-z"], cwd=worktree
+            ).split("\0")
+            staged_outside_selection = [
+                item for item in staged_paths if item and item not in selected_paths
+            ]
+            if staged_outside_selection:
+                raise AgentError(
+                    message="Selected checkpoint cannot exclude already staged files",
+                    code=CODE_CHECKPOINT_BLOCKED,
+                    details={"staged_outside_selection": staged_outside_selection},
+                    suggestions=["Unstage those files or include them in the checkpoint"],
+                )
+        changed_paths = selected_paths
         if not changed_paths:
-            binding.sync_state = "clean"
+            binding.sync_state = "dirty" if self._changed_paths(worktree) else "clean"
             binding.head_commit = self._git_output(["rev-parse", "HEAD"], cwd=worktree)
             self.store.save_binding(binding)
             return None
 
         blocked = self._blocked_paths(worktree, changed_paths)
-        if blocked:
+        if blocked and not allow_blocked:
             binding.sync_state = "dirty"
             self.store.save_binding(binding)
             raise AgentError(
@@ -305,11 +374,183 @@ class GitLaneManager:
         checkpoint.commit_sha = self._git_output(["rev-parse", "HEAD"], cwd=worktree)
         binding.head_commit = checkpoint.commit_sha
         binding.last_checkpoint_id = checkpoint.checkpoint_id
-        binding.sync_state = "clean"
+        remaining_paths = self._changed_paths(worktree)
+        binding.sync_state = "dirty" if remaining_paths else "clean"
         binding.updated_at = time.time()
         self.store.append_checkpoint(checkpoint)
         self.store.save_binding(binding)
         return checkpoint
+
+    def list_checkpoints(self, lane: str) -> list[dict]:
+        self.get_binding(lane)
+        return [item.to_dict() for item in self.store.list_checkpoints(lane)]
+
+    def restore_checkpoint(
+        self, lane: str, checkpoint_id: str, *, discard_changes: bool = False
+    ) -> dict:
+        binding = self.get_binding(lane)
+        checkpoints = self.store.list_checkpoints(lane)
+        checkpoint = next(
+            (item for item in checkpoints if item.checkpoint_id == checkpoint_id), None
+        )
+        if checkpoint is None:
+            raise AgentError(
+                message=f"Checkpoint not found: {checkpoint_id}",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+        self._require_consistent(binding)
+        worktree = Path(binding.worktree_path)
+        changed = self._changed_paths(worktree)
+        if changed and not discard_changes:
+            raise AgentError(
+                message="当前 Worktree 有未保存修改，不能直接恢复检查点",
+                code=CODE_CHECKPOINT_BLOCKED,
+                details={"changed_files": changed},
+                suggestions=["先创建检查点，或明确确认放弃当前修改"],
+            )
+        self._git(["cat-file", "-e", f"{checkpoint.commit_sha}^{{commit}}"])
+        self._git(["reset", "--hard", checkpoint.commit_sha], cwd=worktree)
+        if discard_changes:
+            self._git(["clean", "-fd", "--", "."], cwd=worktree)
+        binding.head_commit = checkpoint.commit_sha
+        binding.sync_state = "clean"
+        binding.updated_at = time.time()
+        self.store.save_binding(binding)
+        return {
+            "lane": lane,
+            "checkpoint": checkpoint.to_dict(),
+            "discarded_changes": bool(changed and discard_changes),
+            "status": self.status(lane),
+        }
+
+    def discard_changes(self, lane: str) -> dict:
+        binding = self.get_binding(lane)
+        self._require_consistent(binding)
+        worktree = Path(binding.worktree_path)
+        changed = self._changed_paths(worktree)
+        self._git(["reset", "--hard", "HEAD"], cwd=worktree)
+        self._git(["clean", "-fd", "--", "."], cwd=worktree)
+        binding.sync_state = "clean"
+        binding.updated_at = time.time()
+        self.store.save_binding(binding)
+        return {"lane": lane, "discarded_files": changed, "status": self.status(lane)}
+
+    def publish(
+        self,
+        lane: str,
+        target_branch: str,
+        *,
+        mode: str = "branch",
+        base_branch: Optional[str] = None,
+    ) -> dict:
+        if mode not in {"branch", "squash"}:
+            raise AgentError(
+                message=f"Unsupported publish mode: {mode}",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+        binding = self.get_binding(lane)
+        self._require_consistent(binding)
+        checkpoint = self.checkpoint(lane, reason="before_publish")
+        if checkpoint is not None:
+            binding = self.get_binding(lane)
+        target_branch = target_branch.strip()
+        if not target_branch or target_branch.startswith("codemate/"):
+            raise AgentError(
+                message="发布目标必须是普通 Git 分支名",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+        if self._git(
+            ["check-ref-format", "--branch", target_branch], check=False
+        ).returncode != 0:
+            raise AgentError(
+                message=f"Invalid target Git branch: {target_branch}",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+        if self._git(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{target_branch}"],
+            check=False,
+        ).returncode == 0:
+            raise AgentError(
+                message=f"Target Git branch already exists: {target_branch}",
+                code=CODE_GIT_OPERATION_FAILED,
+                suggestions=["换一个目标分支名，避免覆盖用户分支"],
+            )
+
+        created_branch = False
+        publish_worktree: Optional[Path] = None
+        try:
+            if mode == "branch":
+                self._git(["branch", target_branch, binding.head_commit])
+                created_branch = True
+                published_commit = binding.head_commit
+            else:
+                base_ref = base_branch or self._source_branch()
+                base_commit = self._git_output(["rev-parse", base_ref])
+                publish_worktree = self._publish_worktree(target_branch)
+                self._git(
+                    ["worktree", "add", "-b", target_branch, str(publish_worktree), base_commit]
+                )
+                created_branch = True
+                merge_result = self._git(
+                    ["merge", "--squash", "--no-commit", binding.head_commit],
+                    cwd=publish_worktree,
+                    check=False,
+                )
+                if merge_result.returncode != 0:
+                    self._raise_git_error(merge_result)
+                staged = self._git(
+                    ["diff", "--cached", "--quiet"],
+                    cwd=publish_worktree,
+                    check=False,
+                )
+                if staged.returncode != 0:
+                    self._git(
+                        [
+                            "-c",
+                            f"core.hooksPath={self._disabled_hooks_dir()}",
+                            "-c",
+                            "user.name=CodeMate Publisher",
+                            "-c",
+                            "user.email=publisher@codemate.local",
+                            "-c",
+                            "commit.gpgSign=false",
+                            "commit",
+                            "--no-verify",
+                            "-m",
+                            f"Adopt CodeMate Lane {lane}",
+                        ],
+                        cwd=publish_worktree,
+                    )
+                published_commit = self._git_output(
+                    ["rev-parse", "HEAD"], cwd=publish_worktree
+                )
+        except Exception:
+            if publish_worktree is not None:
+                self._git(
+                    ["worktree", "remove", "--force", str(publish_worktree)],
+                    check=False,
+                )
+            if created_branch:
+                self._git(["branch", "-D", target_branch], check=False)
+            raise
+        finally:
+            if publish_worktree is not None and publish_worktree.exists():
+                self._git(
+                    ["worktree", "remove", "--force", str(publish_worktree)],
+                    check=False,
+                )
+
+        binding.published_branch = target_branch
+        binding.published_commit = published_commit
+        binding.published_at = time.time()
+        self.store.save_binding(binding)
+        return {
+            "lane": lane,
+            "mode": mode,
+            "target_branch": target_branch,
+            "published_commit": published_commit,
+            "short_commit": published_commit[:8],
+        }
 
     def compare(self, lane_a: str, lane_b: str) -> dict:
         if not self.enabled:
@@ -346,6 +587,15 @@ class GitLaneManager:
         }
 
     def file_diff(self, lane_a: str, lane_b: str, path: str) -> dict:
+        if not self.enabled:
+            return {
+                "enabled": False,
+                "reason": self.disabled_reason,
+                "path": path,
+                "diff": "",
+                "binary": False,
+                "truncated": False,
+            }
         binding_a = self.get_binding(lane_a)
         binding_b = self.get_binding(lane_b)
         normalized = path.replace("\\", "/").lstrip("/")
@@ -406,6 +656,59 @@ class GitLaneManager:
             worktree = Path(binding.worktree_path)
             if worktree.exists():
                 self._git(["worktree", "remove", str(worktree)])
+
+    def _select_paths(
+        self, changed_paths: list[str], include_paths: Optional[list[str]]
+    ) -> list[str]:
+        if include_paths is None:
+            return changed_paths
+        normalized = {
+            item.replace("\\", "/").lstrip("/") for item in include_paths if item.strip()
+        }
+        unknown = sorted(normalized - set(changed_paths))
+        if unknown:
+            raise AgentError(
+                message="Checkpoint selection contains unchanged files",
+                code=CODE_CHECKPOINT_BLOCKED,
+                details={"unchanged_files": unknown},
+            )
+        return [item for item in changed_paths if item in normalized]
+
+    def _source_branch(self) -> str:
+        result = self._git(
+            ["symbolic-ref", "--short", "-q", "HEAD"],
+            cwd=self.source_workspace,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return "HEAD"
+
+    def _publish_worktree(self, target_branch: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", target_branch).strip("-.")
+        path = self.worktree_root / self.repository_id / self.session_id / "publish" / safe
+        if path.exists():
+            raise AgentError(
+                message=f"Publish worktree path already exists: {path}",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _record_operation(
+        self,
+        operation_id: str,
+        state: str,
+        details: Optional[dict] = None,
+    ) -> None:
+        payload = {
+            "operation_id": operation_id,
+            "state": state,
+            "timestamp": time.time(),
+        }
+        if details:
+            payload.update(details)
+        self.store.append_operation(payload)
 
     def delete_files(self) -> None:
         self.store.delete_files()
@@ -621,17 +924,18 @@ class GitLaneManager:
         cwd: Optional[Path] = None,
         *,
         check: bool = True,
+        input_text: Optional[str] = None,
     ) -> subprocess.CompletedProcess[str]:
         self._require_enabled()
         command = ["git", "-C", str(cwd or self.repository_root), *args]
-        result = self._run_raw(command, check=False)
+        result = self._run_raw(command, check=False, input_text=input_text)
         if check and result.returncode != 0:
             self._raise_git_error(result)
         return result
 
     @staticmethod
     def _run_raw(
-        command: list[str], *, check: bool = True
+        command: list[str], *, check: bool = True, input_text: Optional[str] = None
     ) -> subprocess.CompletedProcess[str]:
         try:
             result = subprocess.run(
@@ -641,6 +945,7 @@ class GitLaneManager:
                 errors="replace",
                 capture_output=True,
                 shell=False,
+                input=input_text,
             )
         except OSError as exc:
             raise AgentError(

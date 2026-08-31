@@ -18,7 +18,14 @@ from ..errors.types import (
     LaneNotFoundError,
     SessionNotFoundError,
 )
-from .schemas import CreateLaneIn, CreateSessionIn, UpdatePermissionGateIn
+from .schemas import (
+    CheckpointIn,
+    CreateLaneIn,
+    CreateSessionIn,
+    PublishLaneIn,
+    RestoreCheckpointIn,
+    UpdatePermissionGateIn,
+)
 from .session_service import SessionManager, SessionRuntime
 
 router = APIRouter(prefix="/api")
@@ -139,11 +146,15 @@ def _dialog_initial_dir(initial_path: str | None) -> Path:
 
 
 @router.get("/sessions/{session_id}/lanes")
-def list_lanes(session_id: str, manager: SessionManager = Depends(get_manager)) -> dict:
+def list_lanes(
+    session_id: str,
+    include_archived: bool = Query(False),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
     runtime = _require_session(manager, session_id)
     return {
         "current_lane": runtime.lane_manager.current_lane,
-        "lanes": runtime.list_lane_payloads(),
+        "lanes": runtime.list_lane_payloads(include_archived=include_archived),
     }
 
 
@@ -250,10 +261,15 @@ def compare_lane_file(
 async def create_lane_checkpoint(
     session_id: str,
     lane: str,
+    body: CheckpointIn | None = None,
     manager: SessionManager = Depends(get_manager),
 ) -> dict:
     runtime = _require_session(manager, session_id)
-    payload = runtime.checkpoint_lane(lane)
+    payload = runtime.checkpoint_lane(
+        lane,
+        paths=body.paths if body else None,
+        allow_blocked=body.allow_blocked if body else False,
+    )
     checkpoint = payload.get("checkpoint")
     if checkpoint:
         await runtime.emit(
@@ -267,6 +283,68 @@ async def create_lane_checkpoint(
             },
         )
     return payload
+
+
+@router.get("/sessions/{session_id}/lanes/{lane}/status")
+def lane_status(
+    session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return _require_session(manager, session_id).lane_status(lane)
+
+
+@router.get("/sessions/{session_id}/lanes/{lane}/checkpoints")
+def lane_checkpoints(
+    session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return {
+        "lane": lane,
+        "checkpoints": _require_session(manager, session_id).checkpoints(lane),
+    }
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/restore")
+def restore_checkpoint(
+    session_id: str,
+    lane: str,
+    body: RestoreCheckpointIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    return _require_session(manager, session_id).restore_checkpoint(
+        lane, body.checkpoint_id, body.discard_changes
+    )
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/discard")
+def discard_lane_changes(
+    session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return _require_session(manager, session_id).discard_changes(lane)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/publish")
+def publish_lane(
+    session_id: str,
+    lane: str,
+    body: PublishLaneIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    return _require_session(manager, session_id).publish_lane(
+        lane, body.target_branch, body.mode, body.base_branch
+    )
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/archive")
+def archive_lane(
+    session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return _require_session(manager, session_id).archive_lane(lane)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/restore-lane")
+def restore_lane(
+    session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return _require_session(manager, session_id).restore_lane(lane)
 
 
 # --- 权限审计 --------------------------------------------------------------

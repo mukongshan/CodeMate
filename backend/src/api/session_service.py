@@ -59,6 +59,9 @@ class SessionRuntime:
             for pointer in self.lane_manager.list_lanes():
                 if not self.git_manager.has_binding(pointer.lane):
                     self.git_manager.ensure_legacy_lane(pointer.lane)
+            self.git_manager.reconcile_operations(
+                {pointer.lane for pointer in self.lane_manager.list_lanes()}
+            )
         self.log = StructuredLogger(session_id, config.log_dir)
         active_workspace = self.workspace_for_lane(self.lane_manager.current_lane)
         self.permission_manager = PermissionManager(
@@ -255,12 +258,18 @@ class SessionRuntime:
         return self.git_manager.active_workspace(lane)
 
     def lane_payload(self, lane: str) -> dict:
-        payload = self.lane_manager.get_lane(lane).to_api_dict()
+        pointer = self.lane_manager.get_lane(lane)
+        payload = pointer.to_api_dict()
         payload["git"] = self.git_manager.lane_api(lane)
         return payload
 
-    def list_lane_payloads(self) -> list[dict]:
-        return [self.lane_payload(item.lane) for item in self.lane_manager.list_lanes()]
+    def list_lane_payloads(self, include_archived: bool = False) -> list[dict]:
+        lanes = (
+            self.lane_manager.list_lanes()
+            if include_archived
+            else self.lane_manager.list_active_lanes()
+        )
+        return [self.lane_payload(item.lane) for item in lanes]
 
     def create_lane(
         self, name: str, from_id: Optional[str], description: str = ""
@@ -288,6 +297,7 @@ class SessionRuntime:
             )
             self.lane_manager.switch_lane(name)
             self.permission_manager.set_workspace(self.workspace_for_lane(name))
+            self.git_manager.complete_operation(self.git_manager.last_operation_id)
         except Exception:
             if git_created:
                 self.git_manager.rollback_lane_creation(name)
@@ -314,17 +324,70 @@ class SessionRuntime:
             self.git_manager.remove_lane(lane)
         self.lane_manager.delete_lane(lane)
 
-    def checkpoint_lane(self, lane: str, reason: str = "manual") -> dict:
+    def checkpoint_lane(
+        self,
+        lane: str,
+        reason: str = "manual",
+        paths: Optional[list[str]] = None,
+        allow_blocked: bool = False,
+    ) -> dict:
         checkpoint = self.git_manager.checkpoint(
             lane,
             reason=reason,
             conversation_entry_id=self.lane_manager.get_lane(lane).leaf_id,
+            include_paths=paths,
+            allow_blocked=allow_blocked,
         )
         return {
             "created": checkpoint is not None,
             "checkpoint": checkpoint.to_dict() if checkpoint else None,
             "lane": self.lane_payload(lane),
         }
+
+    def lane_status(self, lane: str) -> dict:
+        self.lane_manager.get_lane(lane)
+        return {"lane": lane, "git": self.git_manager.lane_api(lane)}
+
+    def checkpoints(self, lane: str) -> list[dict]:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.list_checkpoints(lane)
+
+    def restore_checkpoint(
+        self, lane: str, checkpoint_id: str, discard_changes: bool = False
+    ) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.restore_checkpoint(
+            lane, checkpoint_id, discard_changes=discard_changes
+        )
+
+    def discard_changes(self, lane: str) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.discard_changes(lane)
+
+    def publish_lane(
+        self,
+        lane: str,
+        target_branch: str,
+        mode: str = "branch",
+        base_branch: Optional[str] = None,
+    ) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.publish(
+            lane, target_branch, mode=mode, base_branch=base_branch
+        )
+
+    def archive_lane(self, lane: str) -> dict:
+        pointer = self.lane_manager.get_lane(lane)
+        if self.git_manager.enabled and not pointer.archived:
+            self.git_manager.checkpoint(lane, reason="before_archive")
+        pointer = self.lane_manager.archive_lane(lane)
+        return self.lane_payload(pointer.lane)
+
+    def restore_lane(self, lane: str) -> dict:
+        pointer = self.lane_manager.restore_lane(lane)
+        if self.git_manager.enabled:
+            self.git_manager.get_binding(lane)
+        return self.lane_payload(pointer.lane)
 
     def compare_lanes(self, lane_a: str, lane_b: str) -> dict:
         comparison = self.lane_manager.compare_lanes(
@@ -337,7 +400,7 @@ class SessionRuntime:
 
     def snapshot(self) -> dict:
         """一次性返回前端渲染树所需的全部数据。"""
-        lanes = self.lane_manager.list_lanes()
+        lanes = self.lane_manager.list_active_lanes()
         return {
             "session_id": self.session_id,
             "workspace": str(self.workspace_for_lane(self.lane_manager.current_lane)),
@@ -347,6 +410,7 @@ class SessionRuntime:
             "repository_root": str(self.git_manager.repository_root)
             if self.git_manager.repository_root
             else None,
+            "pending_git_operations": self.git_manager.store.pending_operations(),
             "current_lane": self.lane_manager.current_lane,
             "agent_state": self.state.value,
             "is_running": self.is_running,

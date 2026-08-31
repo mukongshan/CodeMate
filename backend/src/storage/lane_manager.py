@@ -160,6 +160,12 @@ class LaneManager:
         要求执行期间拒绝切换，那个判断在 run 锁那一层做，不在这里重复。
         """
         pointer = self.get_lane(name)
+        if pointer.archived:
+            raise AgentError(
+                message=f"不能切换到已归档分支: {name}",
+                code=CODE_LANE_PROTECTED,
+                suggestions=["先恢复该分支，再进行切换"],
+            )
         if name != self._current_lane:
             self._current_lane = name
             self._append_raw({"current_lane": name})
@@ -209,6 +215,7 @@ class LaneManager:
             seq=prev.seq + 1,
             created_from=prev.created_from,
             description=prev.description,
+            archived=prev.archived,
         )
         self._append(pointer)
         return pointer
@@ -239,6 +246,45 @@ class LaneManager:
         lanes = list(self._lanes.values())
         lanes.sort(key=lambda p: (p.lane != MAIN_LANE,))
         return lanes
+
+    def list_active_lanes(self) -> list[LanePointer]:
+        return [lane for lane in self.list_lanes() if not lane.archived]
+
+    def archive_lane(self, name: str) -> LanePointer:
+        pointer = self.get_lane(name)
+        if name == MAIN_LANE or name == self._current_lane:
+            raise AgentError(
+                message=f"不能归档 {name} 分支",
+                code=CODE_LANE_PROTECTED,
+                suggestions=["先切换到其他分支；main 不允许归档"],
+            )
+        if pointer.archived:
+            return pointer
+        archived = LanePointer(
+            lane=pointer.lane,
+            leaf_id=pointer.leaf_id,
+            seq=pointer.seq + 1,
+            created_from=pointer.created_from,
+            description=pointer.description,
+            archived=True,
+        )
+        self._append(archived)
+        return archived
+
+    def restore_lane(self, name: str) -> LanePointer:
+        pointer = self.get_lane(name)
+        if not pointer.archived:
+            return pointer
+        restored = LanePointer(
+            lane=pointer.lane,
+            leaf_id=pointer.leaf_id,
+            seq=pointer.seq + 1,
+            created_from=pointer.created_from,
+            description=pointer.description,
+            archived=False,
+        )
+        self._append(restored)
+        return restored
 
     def delete_lane(self, name: str, current_lane: Optional[str] = None) -> None:
         """删除分支指针，不删树中的节点（03 号文档 3.4 节）。"""

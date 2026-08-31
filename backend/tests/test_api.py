@@ -373,6 +373,56 @@ class TestGitLaneAPI:
         lanes = client.get("/api/sessions/blocked-checkpoint/lanes").json()["lanes"]
         assert {item["lane"] for item in lanes} == {"main"}
 
+    def test_checkpoint_history_publish_and_archive(self, client, temp_dir):
+        repo = self._create_repo(temp_dir)
+        client.post(
+            "/api/sessions",
+            json={"session_id": "lifecycle-api", "workspace": str(repo)},
+        )
+        snapshot = client.get("/api/sessions/lifecycle-api").json()
+        main_workspace = Path(snapshot["workspace"])
+        (main_workspace / "app.py").write_text("value = 'published'\n", encoding="utf-8")
+
+        checkpoint = client.post(
+            "/api/sessions/lifecycle-api/lanes/main/checkpoint",
+            json={"paths": ["app.py"]},
+        )
+        assert checkpoint.status_code == 200
+        checkpoint_id = checkpoint.json()["checkpoint"]["checkpoint_id"]
+
+        history = client.get(
+            "/api/sessions/lifecycle-api/lanes/main/checkpoints"
+        )
+        assert history.status_code == 200
+        assert any(item["checkpoint_id"] == checkpoint_id for item in history.json()["checkpoints"])
+
+        publish = client.post(
+            "/api/sessions/lifecycle-api/lanes/main/publish",
+            json={"target_branch": "feature/published", "mode": "branch"},
+        )
+        assert publish.status_code == 200
+        assert publish.json()["target_branch"] == "feature/published"
+
+        create_lane = client.post(
+            "/api/sessions/lifecycle-api/lanes",
+            json={"name": "archive-me"},
+        )
+        assert create_lane.status_code == 201
+        client.post("/api/sessions/lifecycle-api/lanes/main/switch")
+        archive = client.post(
+            "/api/sessions/lifecycle-api/lanes/archive-me/archive"
+        )
+        assert archive.status_code == 200
+        assert archive.json()["archived"] is True
+        active = client.get("/api/sessions/lifecycle-api/lanes").json()["lanes"]
+        assert {item["lane"] for item in active} == {"main"}
+
+        restore_lane = client.post(
+            "/api/sessions/lifecycle-api/lanes/archive-me/restore-lane"
+        )
+        assert restore_lane.status_code == 200
+        assert restore_lane.json()["archived"] is False
+
 
 class TestPermissionAPI:
     """测试权限审计 API。"""

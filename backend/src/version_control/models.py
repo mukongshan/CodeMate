@@ -16,6 +16,9 @@ class LaneCodeBinding:
     head_commit: str
     sync_state: str = "clean"
     last_checkpoint_id: Optional[str] = None
+    published_branch: Optional[str] = None
+    published_commit: Optional[str] = None
+    published_at: Optional[float] = None
     updated_at: float = field(default_factory=time.time)
 
     @staticmethod
@@ -28,6 +31,13 @@ class LaneCodeBinding:
             head_commit=data["head_commit"],
             sync_state=data.get("sync_state", "clean"),
             last_checkpoint_id=data.get("last_checkpoint_id"),
+            published_branch=data.get("published_branch"),
+            published_commit=data.get("published_commit"),
+            published_at=(
+                float(data["published_at"])
+                if data.get("published_at") is not None
+                else None
+            ),
             updated_at=float(data.get("updated_at", time.time())),
         )
 
@@ -47,6 +57,9 @@ class LaneCodeBinding:
             "short_head": self.head_commit[:8],
             "sync_state": self.sync_state,
             "last_checkpoint_id": self.last_checkpoint_id,
+            "published_branch": self.published_branch,
+            "published_commit": self.published_commit,
+            "published_at": self.published_at,
             "updated_at": self.updated_at,
         }
 

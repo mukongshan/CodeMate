@@ -232,6 +232,7 @@ class LanePointer:
     timestamp: float = field(default_factory=time.time)
     created_from: Optional[str] = None
     description: str = ""
+    archived: bool = False
 
     def to_jsonl_dict(self) -> dict:
         return {
@@ -241,6 +242,7 @@ class LanePointer:
             "timestamp": self.timestamp,
             "created_from": self.created_from,
             "description": self.description,
+            "archived": self.archived,
         }
 
     @staticmethod
@@ -252,6 +254,7 @@ class LanePointer:
             timestamp=float(data.get("timestamp", 0.0)),
             created_from=data.get("created_from"),
             description=data.get("description", "") or "",
+            archived=bool(data.get("archived", False)),
         )
 
     def to_api_dict(self) -> dict:
@@ -262,4 +265,5 @@ class LanePointer:
             "timestamp": self.timestamp,
             "created_from": self.created_from,
             "description": self.description,
+            "archived": self.archived,
         }

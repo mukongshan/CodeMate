@@ -110,3 +110,103 @@ def test_external_managed_branch_commit_is_marked_out_of_sync(tmp_path):
         manager.checkpoint("main", reason="manual")
 
     assert raised.value.code == "GIT_OPERATION_FAILED"
+
+
+def test_selective_checkpoint_keeps_unselected_changes_dirty(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "selective-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    workspace = manager.active_workspace("main")
+    (workspace / "selected.txt").write_text("selected\n", encoding="utf-8")
+    (workspace / "deferred.txt").write_text("deferred\n", encoding="utf-8")
+
+    checkpoint = manager.checkpoint(
+        "main", reason="manual", include_paths=["selected.txt"]
+    )
+
+    assert checkpoint is not None
+    assert manager.status("main")["changed_files"] == ["deferred.txt"]
+    assert manager.get_binding("main").sync_state == "dirty"
+
+
+def test_publish_and_restore_checkpoint(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "publish-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    workspace = manager.active_workspace("main")
+    (workspace / "readme.txt").write_text("first\n", encoding="utf-8")
+    first = manager.checkpoint("main", reason="manual")
+    assert first is not None
+
+    (workspace / "readme.txt").write_text("second\n", encoding="utf-8")
+    second = manager.checkpoint("main", reason="manual")
+    assert second is not None
+
+    restored = manager.restore_checkpoint("main", first.checkpoint_id)
+    assert restored["checkpoint"]["checkpoint_id"] == first.checkpoint_id
+    assert (workspace / "readme.txt").read_text(encoding="utf-8") == "first\n"
+
+    published = manager.publish("main", "adopted-result", mode="branch")
+    assert published["target_branch"] == "adopted-result"
+    assert git(repo, "rev-parse", "adopted-result") == first.commit_sha
+
+
+def test_publish_squash_creates_formal_commit_without_touching_source(tmp_path):
+    repo = create_repo(tmp_path)
+    source_before = (repo / "readme.txt").read_text(encoding="utf-8")
+    manager = GitLaneManager(
+        "squash-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    workspace = manager.active_workspace("main")
+    (workspace / "readme.txt").write_text("lane result\n", encoding="utf-8")
+    checkpoint = manager.checkpoint("main", reason="manual")
+    assert checkpoint is not None
+
+    published = manager.publish("main", "adopted-squash", mode="squash")
+
+    assert published["target_branch"] == "adopted-squash"
+    assert git(repo, "show", "adopted-squash:readme.txt") == "lane result"
+    assert (repo / "readme.txt").read_text(encoding="utf-8") == source_before
+
+
+def test_operation_journal_reconciles_unfinished_lane_creation(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "journal-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    manager.create_lane("recoverable", "main")
+    operation_id = manager.last_operation_id
+    assert operation_id
+
+    manager.store.append_operation(
+        {
+            "operation_id": operation_id,
+            "state": "git_done",
+            "timestamp": 0,
+        }
+    )
+    recovered = manager.reconcile_operations({"main"})
+
+    assert recovered == [
+        {"operation_id": operation_id, "lane": "recoverable", "action": "rolled_back"}
+    ]
+    assert not manager.has_binding("recoverable")
+    assert manager.store.pending_operations() == []
