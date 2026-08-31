@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Code2,
+  FolderOpen,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ export default function Toolbar() {
     setSession,
     clearSession,
     setShowCompareDrawer,
+    setShowWorkspaceFiles,
   } = useStore();
   const [showLaneDropdown, setShowLaneDropdown] = useState(false);
   const [showCreateLane, setShowCreateLane] = useState(false);
@@ -174,6 +176,15 @@ export default function Toolbar() {
         >
           <Code2 className="h-4 w-4" />
           代码管理
+        </button>
+
+        <button
+          onClick={() => setShowWorkspaceFiles(true)}
+          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-surface-3"
+          title="浏览当前 Lane 工作区文件"
+        >
+          <FolderOpen className="h-4 w-4" />
+          文件
         </button>
       </div>
 

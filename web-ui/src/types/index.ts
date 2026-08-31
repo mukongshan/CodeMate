@@ -75,6 +75,34 @@ export interface CodeDiffFile {
   score?: string | null;
 }
 
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  size: number | null;
+  modified_at: number;
+  hidden: boolean;
+}
+
+export interface WorkspaceDirectoryPayload {
+  path: string;
+  entries: WorkspaceFileEntry[];
+  truncated: boolean;
+  workspace: string;
+  lane: string;
+}
+
+export interface WorkspaceFilePayload {
+  path: string;
+  content: string | null;
+  encoding: string | null;
+  binary: boolean;
+  size: number;
+  lines: number | null;
+  workspace: string;
+  lane: string;
+}
+
 export interface LaneCodeComparison {
   enabled: boolean;
   reason?: string;

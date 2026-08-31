@@ -5,6 +5,7 @@ import TreeCanvas from './tree/TreeCanvas';
 import ConversationPanel from './conversation/ConversationPanel';
 import PermissionModal from './modals/PermissionModal';
 import CompareDrawer from './modals/CompareDrawer';
+import WorkspaceFileViewer from './modals/WorkspaceFileViewer';
 
 interface WorkspaceProps {
   sendMessage: (content: string, lane?: string) => void;
@@ -15,7 +16,7 @@ export default function Workspace({
   sendMessage,
   sendPermissionResponse,
 }: WorkspaceProps) {
-  const { permissionRequest, showCompareDrawer } = useStore();
+  const { permissionRequest, showCompareDrawer, showWorkspaceFiles } = useStore();
   const [splitRatio, setSplitRatio] = useState(40); // 左侧占比
 
   return (
@@ -73,6 +74,7 @@ export default function Workspace({
 
       {/* 分支对比抽屉 */}
       {showCompareDrawer && <CompareDrawer />}
+      {showWorkspaceFiles && <WorkspaceFileViewer />}
     </div>
   );
 }

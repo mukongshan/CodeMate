@@ -27,6 +27,7 @@ from .schemas import (
     UpdatePermissionGateIn,
 )
 from .session_service import SessionManager, SessionRuntime
+from .workspace_files import list_directory, read_file
 
 router = APIRouter(prefix="/api")
 
@@ -132,6 +133,32 @@ def _pick_directory_with_windows_dialog(initial_path: str | None = None) -> Path
     if not selected:
         return None
     return Path(selected).resolve()
+
+
+@router.get("/sessions/{session_id}/workspace/files")
+def list_workspace_files(
+    session_id: str,
+    path: str = Query(default="", description="当前工作区内的相对目录路径"),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    workspace = runtime.workspace_for_lane(runtime.lane_manager.current_lane)
+    payload = list_directory(workspace, path)
+    payload["lane"] = runtime.lane_manager.current_lane
+    return payload
+
+
+@router.get("/sessions/{session_id}/workspace/file")
+def read_workspace_file(
+    session_id: str,
+    path: str = Query(..., description="当前工作区内的相对文件路径"),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    workspace = runtime.workspace_for_lane(runtime.lane_manager.current_lane)
+    payload = read_file(workspace, path)
+    payload["lane"] = runtime.lane_manager.current_lane
+    return payload
 
 
 def _dialog_initial_dir(initial_path: str | None) -> Path:

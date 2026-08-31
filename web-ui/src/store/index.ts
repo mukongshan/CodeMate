@@ -38,6 +38,7 @@ interface AppState {
   selectedNodeId: string | null;
   showNodeDetail: boolean;
   showCompareDrawer: boolean;
+  showWorkspaceFiles: boolean;
   compareLanes: [string, string] | null;
   permissionRequest: PermissionRequest | null;
   runtimeError: RuntimeErrorNotice | null;
@@ -69,6 +70,7 @@ interface AppState {
   setSelectedNode: (nodeId: string | null) => void;
   setShowNodeDetail: (show: boolean) => void;
   setShowCompareDrawer: (show: boolean) => void;
+  setShowWorkspaceFiles: (show: boolean) => void;
   setCompareLanes: (lanes: [string, string] | null) => void;
   setPermissionRequest: (request: PermissionRequest | null) => void;
   setRuntimeError: (error: RuntimeErrorNotice | null) => void;
@@ -101,6 +103,7 @@ export const useStore = create<AppState>((set) => ({
   selectedNodeId: null,
   showNodeDetail: false,
   showCompareDrawer: false,
+  showWorkspaceFiles: false,
   compareLanes: null,
   permissionRequest: null,
   runtimeError: null,
@@ -142,6 +145,7 @@ export const useStore = create<AppState>((set) => ({
       selectedNodeId: null,
       showNodeDetail: false,
       showCompareDrawer: false,
+      showWorkspaceFiles: false,
       compareLanes: null,
       permissionRequest: null,
       runtimeError: null,
@@ -216,6 +220,7 @@ export const useStore = create<AppState>((set) => ({
   setSelectedNode: (nodeId) => set({ selectedNodeId: nodeId }),
   setShowNodeDetail: (show) => set({ showNodeDetail: show }),
   setShowCompareDrawer: (show) => set({ showCompareDrawer: show }),
+  setShowWorkspaceFiles: (show) => set({ showWorkspaceFiles: show }),
   setCompareLanes: (lanes) => set({ compareLanes: lanes }),
   setPermissionRequest: (request) => set({ permissionRequest: request }),
   setRuntimeError: (error) => set({ runtimeError: error }),

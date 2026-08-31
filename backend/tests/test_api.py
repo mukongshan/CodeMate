@@ -155,7 +155,7 @@ class TestSessionAPI:
 
 
 class TestFilesystemAPI:
-    """测试本地目录选择 API。"""
+    """测试本地目录选择和工作区文件 API。"""
 
     def test_pick_directory(self, client, temp_dir, monkeypatch):
         selected = temp_dir / "selected"
@@ -172,6 +172,86 @@ class TestFilesystemAPI:
         )
         assert response.status_code == 200
         assert response.json()["path"] == str(selected)
+
+    def test_list_and_read_workspace_files(self, client, temp_dir):
+        workspace = temp_dir / "file-viewer-workspace"
+        (workspace / "src").mkdir(parents=True)
+        (workspace / "src" / "main.py").write_text("print('hello')\n", encoding="utf-8")
+        (workspace / ".git").mkdir()
+
+        create = client.post(
+            "/api/sessions",
+            json={"session_id": "file-viewer", "workspace": str(workspace)},
+        )
+        assert create.status_code == 201
+
+        root = client.get("/api/sessions/file-viewer/workspace/files")
+        assert root.status_code == 200
+        root_data = root.json()
+        assert root_data["lane"] == "main"
+        assert {entry["name"] for entry in root_data["entries"]} == {"src"}
+
+        directory = client.get(
+            "/api/sessions/file-viewer/workspace/files",
+            params={"path": "src"},
+        )
+        assert directory.status_code == 200
+        assert directory.json()["entries"][0]["path"] == "src/main.py"
+
+        file_response = client.get(
+            "/api/sessions/file-viewer/workspace/file",
+            params={"path": "src/main.py"},
+        )
+        assert file_response.status_code == 200
+        assert file_response.json()["content"].replace("\r\n", "\n") == "print('hello')\n"
+        assert file_response.json()["binary"] is False
+
+    def test_workspace_file_path_is_confined(self, client, temp_dir):
+        workspace = temp_dir / "confined-workspace"
+        workspace.mkdir()
+        (temp_dir / "outside.txt").write_text("secret", encoding="utf-8")
+        client.post(
+            "/api/sessions",
+            json={"session_id": "confined", "workspace": str(workspace)},
+        )
+
+        response = client.get(
+            "/api/sessions/confined/workspace/file",
+            params={"path": "../outside.txt"},
+        )
+        assert response.status_code == 400
+
+    def test_workspace_git_metadata_is_hidden(self, client, temp_dir):
+        workspace = temp_dir / "git-metadata-workspace"
+        (workspace / ".git").mkdir(parents=True)
+        (workspace / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        client.post(
+            "/api/sessions",
+            json={"session_id": "git-metadata", "workspace": str(workspace)},
+        )
+
+        response = client.get(
+            "/api/sessions/git-metadata/workspace/file",
+            params={"path": ".git/config"},
+        )
+        assert response.status_code == 403
+
+    def test_workspace_binary_file_is_not_decoded(self, client, temp_dir):
+        workspace = temp_dir / "binary-workspace"
+        workspace.mkdir()
+        (workspace / "image.bin").write_bytes(b"\x00\x01\x02")
+        client.post(
+            "/api/sessions",
+            json={"session_id": "binary-viewer", "workspace": str(workspace)},
+        )
+
+        response = client.get(
+            "/api/sessions/binary-viewer/workspace/file",
+            params={"path": "image.bin"},
+        )
+        assert response.status_code == 200
+        assert response.json()["binary"] is True
+        assert response.json()["content"] is None
 
 
 class TestLaneAPI:
