@@ -56,6 +56,10 @@ export interface LaneGitState {
   published_base_branch?: string | null;
   publication_count?: number;
   published_at?: number | null;
+  pending_checkpoint_since?: number | null;
+  pending_checkpoint_last_run_at?: number | null;
+  pending_run_ids?: string[];
+  pending_conversation_entry_ids?: string[];
   updated_at?: number;
 }
 

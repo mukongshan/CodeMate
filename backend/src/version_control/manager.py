@@ -46,12 +46,20 @@ class GitLaneManager:
         data_dir: Path | str,
         worktree_root: Path | str,
         max_file_bytes: int,
+        checkpoint_merge_window_seconds: float = 300.0,
+        checkpoint_max_pending_runs: int = 10,
+        checkpoint_max_pending_files: int = 20,
+        checkpoint_max_pending_seconds: float = 1800.0,
     ) -> None:
         self.session_id = session_id
         self.source_workspace = Path(source_workspace).expanduser().resolve()
         self.store = LaneGitStore(session_id, data_dir)
         self.worktree_root = Path(worktree_root).expanduser().resolve()
         self.max_file_bytes = max_file_bytes
+        self.checkpoint_merge_window_seconds = max(0.0, checkpoint_merge_window_seconds)
+        self.checkpoint_max_pending_runs = max(1, checkpoint_max_pending_runs)
+        self.checkpoint_max_pending_files = max(1, checkpoint_max_pending_files)
+        self.checkpoint_max_pending_seconds = max(0.0, checkpoint_max_pending_seconds)
         self.repository_root: Optional[Path] = None
         self.repository_id: Optional[str] = None
         self.workspace_relative = Path(".")
@@ -319,8 +327,8 @@ class GitLaneManager:
         binding = self.get_binding(lane)
         worktree = Path(binding.worktree_path)
         self._require_consistent(binding)
-        changed_paths = self._changed_paths(worktree)
-        selected_paths = self._select_paths(changed_paths, include_paths)
+        all_changed_paths = self._changed_paths(worktree)
+        selected_paths = self._select_paths(all_changed_paths, include_paths)
         if include_paths is not None:
             staged_paths = self._git_output(
                 ["diff", "--cached", "--name-only", "-z"], cwd=worktree
@@ -337,7 +345,9 @@ class GitLaneManager:
                 )
         changed_paths = selected_paths
         if not changed_paths:
-            binding.sync_state = "dirty" if self._changed_paths(worktree) else "clean"
+            if not all_changed_paths:
+                self._clear_pending_checkpoint(binding)
+            binding.sync_state = "dirty" if all_changed_paths else "clean"
             binding.head_commit = self._git_output(["rev-parse", "HEAD"], cwd=worktree)
             self.store.save_binding(binding)
             return None
@@ -359,15 +369,23 @@ class GitLaneManager:
         if not staged:
             return None
 
+        pending_run_ids = list(binding.pending_run_ids)
+        if run_id and run_id not in pending_run_ids:
+            pending_run_ids.append(run_id)
+        pending_entry_ids = list(binding.pending_conversation_entry_ids)
+        if conversation_entry_id and conversation_entry_id not in pending_entry_ids:
+            pending_entry_ids.append(conversation_entry_id)
         checkpoint = CodeCheckpoint(
             lane=lane,
             commit_sha="",
             previous_commit=previous,
             reason=reason,
             conversation_entry_id=conversation_entry_id,
-            run_id=run_id,
+            run_id=run_id or (pending_run_ids[-1] if pending_run_ids else None),
             run_status=run_status,
             changed_files=self._file_status(previous, worktree),
+            run_ids=pending_run_ids,
+            conversation_entry_ids=pending_entry_ids,
         )
         message = self._checkpoint_message(checkpoint)
         self._git(
@@ -392,10 +410,98 @@ class GitLaneManager:
         binding.last_checkpoint_id = checkpoint.checkpoint_id
         remaining_paths = self._changed_paths(worktree)
         binding.sync_state = "dirty" if remaining_paths else "clean"
+        if not remaining_paths:
+            self._clear_pending_checkpoint(binding)
         binding.updated_at = time.time()
         self.store.append_checkpoint(checkpoint)
         self.store.save_binding(binding)
         return checkpoint
+
+    def defer_run_checkpoint(
+        self,
+        lane: str,
+        *,
+        run_id: str,
+        conversation_entry_id: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> dict:
+        """登记一次成功 Run 的待检查点，并判断是否应立即合并提交。"""
+        if not self.enabled:
+            return {"pending": False, "should_flush": False, "changed_files": []}
+        binding = self.get_binding(lane)
+        worktree = Path(binding.worktree_path)
+        self._require_consistent(binding)
+        current = now if now is not None else time.time()
+        changed_files = self._changed_paths(worktree)
+        if not changed_files:
+            self._clear_pending_checkpoint(binding)
+            binding.sync_state = "clean"
+            self.store.save_binding(binding)
+            return {"pending": False, "should_flush": False, "changed_files": []}
+        if binding.pending_checkpoint_since is None:
+            binding.pending_checkpoint_since = current
+        binding.pending_checkpoint_last_run_at = current
+        if run_id not in binding.pending_run_ids:
+            binding.pending_run_ids.append(run_id)
+        if conversation_entry_id and conversation_entry_id not in binding.pending_conversation_entry_ids:
+            binding.pending_conversation_entry_ids.append(conversation_entry_id)
+        binding.sync_state = "dirty"
+        binding.updated_at = current
+        self.store.save_binding(binding)
+        status = self.pending_checkpoint_status(lane, now=current)
+        return status
+
+    def pending_checkpoint_status(
+        self, lane: str, *, now: Optional[float] = None
+    ) -> dict:
+        if not self.enabled:
+            return {"pending": False, "should_flush": False, "changed_files": []}
+        binding = self.get_binding(lane)
+        current = now if now is not None else time.time()
+        changed_files = self._changed_paths(Path(binding.worktree_path))
+        pending = bool(binding.pending_run_ids or binding.pending_checkpoint_since)
+        if not pending:
+            return {
+                "pending": False,
+                "should_flush": False,
+                "changed_files": changed_files,
+                "pending_run_count": 0,
+            }
+        since = binding.pending_checkpoint_since or current
+        last_run = binding.pending_checkpoint_last_run_at or since
+        idle_due = current - last_run >= self.checkpoint_merge_window_seconds
+        age_due = current - since >= self.checkpoint_max_pending_seconds
+        runs_due = len(binding.pending_run_ids) >= self.checkpoint_max_pending_runs
+        files_due = len(changed_files) >= self.checkpoint_max_pending_files
+        reasons = []
+        if idle_due:
+            reasons.append("merge_window_elapsed")
+        if age_due:
+            reasons.append("max_pending_age")
+        if runs_due:
+            reasons.append("max_pending_runs")
+        if files_due:
+            reasons.append("max_pending_files")
+        return {
+            "pending": True,
+            "should_flush": bool(reasons),
+            "flush_reasons": reasons,
+            "changed_files": changed_files,
+            "pending_run_count": len(binding.pending_run_ids),
+            "pending_since": since,
+            "pending_last_run_at": last_run,
+            "next_flush_at": min(
+                last_run + self.checkpoint_merge_window_seconds,
+                since + self.checkpoint_max_pending_seconds,
+            ),
+        }
+
+    @staticmethod
+    def _clear_pending_checkpoint(binding: LaneCodeBinding) -> None:
+        binding.pending_checkpoint_since = None
+        binding.pending_checkpoint_last_run_at = None
+        binding.pending_run_ids = []
+        binding.pending_conversation_entry_ids = []
 
     def list_checkpoints(self, lane: str) -> list[dict]:
         self.get_binding(lane)

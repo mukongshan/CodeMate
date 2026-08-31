@@ -121,6 +121,11 @@ class AppConfig:
     log_dir: Path = Path("logs")
     worktree_root: Path = field(default_factory=lambda: _default_worktree_root())
     checkpoint_max_file_bytes: int = 10 * 1024 * 1024
+    checkpoint_frequency_mode: str = "balanced"
+    checkpoint_merge_window_seconds: float = 300.0
+    checkpoint_max_pending_runs: int = 10
+    checkpoint_max_pending_files: int = 20
+    checkpoint_max_pending_seconds: float = 1800.0
     command_allowlist: list[str] = field(
         default_factory=lambda: list(DEFAULT_COMMAND_ALLOWLIST)
     )
@@ -157,6 +162,18 @@ class AppConfig:
             ).expanduser().resolve(),
             checkpoint_max_file_bytes=_int_env(
                 "CHECKPOINT_MAX_FILE_BYTES", 10 * 1024 * 1024
+            ),
+            checkpoint_frequency_mode=(
+                os.getenv("CHECKPOINT_FREQUENCY_MODE", "balanced").strip().lower()
+                or "balanced"
+            ),
+            checkpoint_merge_window_seconds=_float_env(
+                "CHECKPOINT_MERGE_WINDOW_SECONDS", 300.0
+            ),
+            checkpoint_max_pending_runs=_int_env("CHECKPOINT_MAX_PENDING_RUNS", 10),
+            checkpoint_max_pending_files=_int_env("CHECKPOINT_MAX_PENDING_FILES", 20),
+            checkpoint_max_pending_seconds=_float_env(
+                "CHECKPOINT_MAX_PENDING_SECONDS", 1800.0
             ),
             command_allowlist=_list_env(
                 "COMMAND_ALLOWLIST",

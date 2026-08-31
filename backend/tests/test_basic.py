@@ -181,6 +181,11 @@ class TestConfig:
         assert config.port == 8000
         assert config.worktree_root.is_absolute()
         assert config.checkpoint_max_file_bytes == 10 * 1024 * 1024
+        assert config.checkpoint_frequency_mode == "balanced"
+        assert config.checkpoint_merge_window_seconds == 300
+        assert config.checkpoint_max_pending_runs == 10
+        assert config.checkpoint_max_pending_files == 20
+        assert config.checkpoint_max_pending_seconds == 1800
 
     def test_from_env_with_api_key(self, monkeypatch):
         """测试从环境变量加载 API Key。"""

@@ -29,6 +29,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
 
   const selectedLanePointer = allLanes.find((lane) => lane.lane === selectedLane);
   const changedFiles = gitState?.changed_files || [];
+  const pendingRunCount = gitState?.pending_run_ids?.length || 0;
   const blockedPaths = useMemo(
     () => new Set((gitState?.blocked_files || []).map((file) => file.path)),
     [gitState]
@@ -217,6 +218,11 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
                   </div>
                   <div className="mt-2 font-mono text-xs text-text-muted">{gitState.managed_branch}</div>
                   <div className="mt-1 text-xs text-text-muted">Code Head: {gitState.short_head || '无'}</div>
+                  {pendingRunCount > 0 && (
+                    <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-status-warning">
+                      已有 {pendingRunCount} 次 Agent Run 的代码修改待合并为检查点；当前代码仍可比较，点击“保存”可立即固化。
+                    </div>
+                  )}
                 </div>
 
                 <section className="rounded-md border border-border p-3">

@@ -55,6 +55,10 @@ class SessionRuntime:
             data_dir=config.data_dir,
             worktree_root=config.worktree_root,
             max_file_bytes=config.checkpoint_max_file_bytes,
+            checkpoint_merge_window_seconds=config.checkpoint_merge_window_seconds,
+            checkpoint_max_pending_runs=config.checkpoint_max_pending_runs,
+            checkpoint_max_pending_files=config.checkpoint_max_pending_files,
+            checkpoint_max_pending_seconds=config.checkpoint_max_pending_seconds,
         )
         if self.git_manager.enabled:
             for pointer in self.lane_manager.list_lanes():
@@ -77,6 +81,7 @@ class SessionRuntime:
         self._active_run_task: Optional[asyncio.Task] = None
         self._active_run_id: Optional[str] = None
         self._interrupt_requested = False
+        self._checkpoint_flush_tasks: dict[str, asyncio.Task] = {}
         self.state = AgentState.IDLE
 
         self.log.info(
@@ -260,37 +265,7 @@ class SessionRuntime:
                     self._active_run_id = None
                     self._interrupt_requested = False
             if result.status == "completed" and self.git_manager.enabled:
-                try:
-                    checkpoint = self.git_manager.checkpoint(
-                        target_lane,
-                        reason="run_completed",
-                        conversation_entry_id=self.lane_manager.get_lane(
-                            target_lane
-                        ).leaf_id,
-                        run_id=result.run_id,
-                        run_status=result.status,
-                    )
-                    if checkpoint is not None:
-                        await self.emit(
-                            "lane_checkpoint_created",
-                            {
-                                "lane": target_lane,
-                                "checkpoint_id": checkpoint.checkpoint_id,
-                                "commit_sha": checkpoint.commit_sha,
-                                "short_head": checkpoint.commit_sha[:8],
-                                "changed_files": checkpoint.changed_files,
-                            },
-                        )
-                except Exception as exc:  # checkpoint failure must preserve the run result
-                    logger.warning("automatic checkpoint failed: %s", exc)
-                    await self.emit(
-                        "lane_sync_state_changed",
-                        {
-                            "lane": target_lane,
-                            "sync_state": "dirty",
-                            "message": str(exc),
-                        },
-                    )
+                await self._handle_completed_run_checkpoint(target_lane, result)
             self.log.info(
                 "run_completed",
                 run_id=result.run_id,
@@ -300,6 +275,147 @@ class SessionRuntime:
                 duration=result.duration,
             )
             return result
+
+    async def _handle_completed_run_checkpoint(
+        self, lane: str, result: RunResult
+    ) -> None:
+        mode = self.config.checkpoint_frequency_mode
+        if mode not in {"safe", "balanced", "manual"}:
+            mode = "balanced"
+        entry_id = self.lane_manager.get_lane(lane).leaf_id
+        try:
+            if mode == "balanced":
+                pending = self.git_manager.defer_run_checkpoint(
+                    lane,
+                    run_id=result.run_id,
+                    conversation_entry_id=entry_id,
+                )
+                if pending["should_flush"]:
+                    checkpoint = self.git_manager.checkpoint(
+                        lane,
+                        reason="run_completed_batch",
+                        conversation_entry_id=entry_id,
+                        run_id=result.run_id,
+                        run_status=result.status,
+                    )
+                    self._cancel_checkpoint_flush(lane)
+                    await self._emit_checkpoint_created(lane, checkpoint)
+                else:
+                    self._schedule_checkpoint_flush(lane)
+                    await self.emit(
+                        "lane_sync_state_changed",
+                        {
+                            "lane": lane,
+                            "sync_state": "dirty",
+                            "pending_checkpoint": True,
+                            "pending_run_count": pending["pending_run_count"],
+                            "changed_files": pending["changed_files"],
+                            "next_flush_at": pending["next_flush_at"],
+                            "message": "代码修改已暂存，连续任务将在检查点窗口结束后合并保存",
+                        },
+                    )
+                return
+
+            if mode == "manual":
+                pending = self.git_manager.defer_run_checkpoint(
+                    lane,
+                    run_id=result.run_id,
+                    conversation_entry_id=entry_id,
+                )
+                await self.emit(
+                    "lane_sync_state_changed",
+                    {
+                        "lane": lane,
+                        "sync_state": "dirty",
+                        "pending_checkpoint": pending["pending"],
+                        "pending_run_count": pending["pending_run_count"],
+                        "changed_files": pending["changed_files"],
+                        "message": "代码修改尚未提交，请手动创建检查点",
+                    },
+                )
+                return
+
+            checkpoint = self.git_manager.checkpoint(
+                lane,
+                reason="run_completed",
+                conversation_entry_id=entry_id,
+                run_id=result.run_id,
+                run_status=result.status,
+            )
+            await self._emit_checkpoint_created(lane, checkpoint)
+        except Exception as exc:  # checkpoint failure must preserve the run result
+            logger.warning("automatic checkpoint failed: %s", exc)
+            await self.emit(
+                "lane_sync_state_changed",
+                {
+                    "lane": lane,
+                    "sync_state": "dirty",
+                    "pending_checkpoint": True,
+                    "message": str(exc),
+                },
+            )
+
+    async def _emit_checkpoint_created(self, lane: str, checkpoint) -> None:
+        if checkpoint is None:
+            return
+        await self.emit(
+            "lane_checkpoint_created",
+            {
+                "lane": lane,
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "commit_sha": checkpoint.commit_sha,
+                "short_head": checkpoint.commit_sha[:8],
+                "changed_files": checkpoint.changed_files,
+                "run_ids": checkpoint.run_ids,
+            },
+        )
+
+    def _schedule_checkpoint_flush(self, lane: str) -> None:
+        previous = self._checkpoint_flush_tasks.get(lane)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._checkpoint_flush_tasks[lane] = asyncio.create_task(
+            self._flush_checkpoint_after_idle(lane)
+        )
+
+    async def _flush_checkpoint_after_idle(self, lane: str) -> None:
+        task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self.git_manager.checkpoint_merge_window_seconds)
+            while self.is_running:
+                await asyncio.sleep(0.25)
+            pending = self.git_manager.pending_checkpoint_status(lane)
+            if not pending["should_flush"]:
+                return
+            entry_id = self.lane_manager.get_lane(lane).leaf_id
+            checkpoint = self.git_manager.checkpoint(
+                lane,
+                reason="run_completed_batch",
+                conversation_entry_id=entry_id,
+            )
+            await self._emit_checkpoint_created(lane, checkpoint)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # background flush must not terminate the session
+            logger.warning("delayed checkpoint flush failed: %s", exc)
+            await self.emit(
+                "lane_sync_state_changed",
+                {
+                    "lane": lane,
+                    "sync_state": "dirty",
+                    "pending_checkpoint": True,
+                    "message": str(exc),
+                },
+            )
+        finally:
+            if task is not None and self._checkpoint_flush_tasks.get(lane) is task:
+                self._checkpoint_flush_tasks.pop(lane, None)
+
+    def cancel_checkpoint_flushes(self) -> None:
+        for task in self._checkpoint_flush_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._checkpoint_flush_tasks.clear()
 
     # --- Lane + Git coordination ------------------------------------------
 
@@ -348,6 +464,7 @@ class SessionRuntime:
         git_created = False
         if self.git_manager.enabled:
             self.git_manager.create_lane(name, source_lane)
+            self._cancel_checkpoint_flush(source_lane)
             git_created = True
         try:
             pointer = self.lane_manager.create_lane(
@@ -371,6 +488,7 @@ class SessionRuntime:
             self.git_manager.ensure_lane_ready(lane)
         if lane != current and self.git_manager.enabled:
             self.git_manager.checkpoint(current, reason="before_switch")
+            self._cancel_checkpoint_flush(current)
         pointer = self.lane_manager.switch_lane(lane)
         self.permission_manager.set_workspace(self.workspace_for_lane(lane))
         return self.lane_payload(pointer.lane)
@@ -383,6 +501,7 @@ class SessionRuntime:
         self.lane_manager.get_lane(lane)
         if self.git_manager.enabled:
             self.git_manager.remove_lane(lane)
+            self._cancel_checkpoint_flush(lane)
         self.lane_manager.delete_lane(lane)
 
     def checkpoint_lane(
@@ -400,6 +519,10 @@ class SessionRuntime:
             include_paths=paths,
             allow_blocked=allow_blocked,
         )
+        if checkpoint is not None:
+            pending_task = self._checkpoint_flush_tasks.pop(lane, None)
+            if pending_task is not None and not pending_task.done():
+                pending_task.cancel()
         return {
             "created": checkpoint is not None,
             "checkpoint": checkpoint.to_dict() if checkpoint else None,
@@ -419,14 +542,23 @@ class SessionRuntime:
     ) -> dict:
         self._ensure_no_active_run("恢复代码检查点")
         self.lane_manager.get_lane(lane)
-        return self.git_manager.restore_checkpoint(
+        result = self.git_manager.restore_checkpoint(
             lane, checkpoint_id, discard_changes=discard_changes
         )
+        self._cancel_checkpoint_flush(lane)
+        return result
 
     def discard_changes(self, lane: str) -> dict:
         self._ensure_no_active_run("丢弃代码修改")
         self.lane_manager.get_lane(lane)
-        return self.git_manager.discard_changes(lane)
+        result = self.git_manager.discard_changes(lane)
+        self._cancel_checkpoint_flush(lane)
+        return result
+
+    def _cancel_checkpoint_flush(self, lane: str) -> None:
+        task = self._checkpoint_flush_tasks.pop(lane, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     def publish_lane(
         self,
@@ -437,15 +569,18 @@ class SessionRuntime:
     ) -> dict:
         self._ensure_no_active_run("发布 Lane")
         self.lane_manager.get_lane(lane)
-        return self.git_manager.publish(
+        result = self.git_manager.publish(
             lane, target_branch, mode=mode, base_branch=base_branch
         )
+        self._cancel_checkpoint_flush(lane)
+        return result
 
     def archive_lane(self, lane: str) -> dict:
         self._ensure_no_active_run("归档 Lane")
         pointer = self.lane_manager.get_lane(lane)
         if self.git_manager.enabled and not pointer.archived:
             self.git_manager.checkpoint(lane, reason="before_archive")
+        self._cancel_checkpoint_flush(lane)
         pointer = self.lane_manager.archive_lane(lane)
         return self.lane_payload(pointer.lane)
 
@@ -454,6 +589,7 @@ class SessionRuntime:
         pointer = self.lane_manager.restore_lane(lane)
         if self.git_manager.enabled:
             self.git_manager.get_binding(lane)
+        self._cancel_checkpoint_flush(lane)
         return self.lane_payload(pointer.lane)
 
     def compare_lanes(self, lane_a: str, lane_b: str) -> dict:
@@ -564,6 +700,7 @@ class SessionManager:
         """删除 session：从内存移除 + 删除磁盘文件。"""
         runtime = self._sessions.get(session_id)
         if runtime is not None:
+            runtime.cancel_checkpoint_flushes()
             runtime.git_manager.close_worktrees()
             runtime.storage.delete_files()
             runtime.lane_manager.delete_files()

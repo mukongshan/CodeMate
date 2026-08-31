@@ -160,6 +160,67 @@ def test_selective_checkpoint_keeps_unselected_changes_dirty(tmp_path):
     assert manager.get_binding("main").sync_state == "dirty"
 
 
+def test_balanced_checkpoint_defers_and_merges_successive_runs(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "balanced-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+        checkpoint_merge_window_seconds=300,
+        checkpoint_max_pending_runs=10,
+        checkpoint_max_pending_files=20,
+        checkpoint_max_pending_seconds=1800,
+    )
+    workspace = manager.active_workspace("main")
+
+    (workspace / "readme.txt").write_text("run one\n", encoding="utf-8")
+    first = manager.defer_run_checkpoint(
+        "main", run_id="run-1", conversation_entry_id="entry-1", now=100
+    )
+    assert first["pending"] is True
+    assert first["should_flush"] is False
+
+    (workspace / "readme.txt").write_text("run two\n", encoding="utf-8")
+    second = manager.defer_run_checkpoint(
+        "main", run_id="run-2", conversation_entry_id="entry-2", now=200
+    )
+    assert second["pending_run_count"] == 2
+    assert second["should_flush"] is False
+    assert manager.status("main")["changed_files"] == ["readme.txt"]
+
+    due = manager.pending_checkpoint_status("main", now=501)
+    assert due["should_flush"] is True
+    checkpoint = manager.checkpoint("main", reason="run_completed_batch")
+    assert checkpoint is not None
+    assert checkpoint.run_ids == ["run-1", "run-2"]
+    assert checkpoint.conversation_entry_ids == ["entry-1", "entry-2"]
+    assert manager.get_binding("main").pending_run_ids == []
+
+
+def test_balanced_checkpoint_flushes_when_run_limit_is_reached(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "balanced-limit-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+        checkpoint_merge_window_seconds=300,
+        checkpoint_max_pending_runs=2,
+    )
+    workspace = manager.active_workspace("main")
+
+    (workspace / "one.txt").write_text("one\n", encoding="utf-8")
+    manager.defer_run_checkpoint("main", run_id="run-1", now=100)
+    (workspace / "two.txt").write_text("two\n", encoding="utf-8")
+    due = manager.defer_run_checkpoint("main", run_id="run-2", now=101)
+
+    assert due["should_flush"] is True
+    assert "max_pending_runs" in due["flush_reasons"]
+
+
 def test_publish_and_restore_checkpoint(tmp_path):
     repo = create_repo(tmp_path)
     manager = GitLaneManager(

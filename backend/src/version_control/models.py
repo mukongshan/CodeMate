@@ -23,6 +23,10 @@ class LaneCodeBinding:
     published_base_branch: Optional[str] = None
     publication_count: int = 0
     published_at: Optional[float] = None
+    pending_checkpoint_since: Optional[float] = None
+    pending_checkpoint_last_run_at: Optional[float] = None
+    pending_run_ids: list[str] = field(default_factory=list)
+    pending_conversation_entry_ids: list[str] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
 
     @staticmethod
@@ -45,6 +49,20 @@ class LaneCodeBinding:
                 float(data["published_at"])
                 if data.get("published_at") is not None
                 else None
+            ),
+            pending_checkpoint_since=(
+                float(data["pending_checkpoint_since"])
+                if data.get("pending_checkpoint_since") is not None
+                else None
+            ),
+            pending_checkpoint_last_run_at=(
+                float(data["pending_checkpoint_last_run_at"])
+                if data.get("pending_checkpoint_last_run_at") is not None
+                else None
+            ),
+            pending_run_ids=list(data.get("pending_run_ids", [])),
+            pending_conversation_entry_ids=list(
+                data.get("pending_conversation_entry_ids", [])
             ),
             updated_at=float(data.get("updated_at", time.time())),
         )
@@ -72,6 +90,10 @@ class LaneCodeBinding:
             "published_base_branch": self.published_base_branch,
             "publication_count": self.publication_count,
             "published_at": self.published_at,
+            "pending_checkpoint_since": self.pending_checkpoint_since,
+            "pending_checkpoint_last_run_at": self.pending_checkpoint_last_run_at,
+            "pending_run_ids": self.pending_run_ids,
+            "pending_conversation_entry_ids": self.pending_conversation_entry_ids,
             "updated_at": self.updated_at,
         }
 
@@ -86,6 +108,8 @@ class CodeCheckpoint:
     run_id: Optional[str] = None
     run_status: Optional[str] = None
     changed_files: list[dict] = field(default_factory=list)
+    run_ids: list[str] = field(default_factory=list)
+    conversation_entry_ids: list[str] = field(default_factory=list)
     checkpoint_id: str = field(
         default_factory=lambda: f"cp_{uuid.uuid4().hex[:12]}"
     )
