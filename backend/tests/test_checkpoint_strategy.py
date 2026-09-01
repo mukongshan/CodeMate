@@ -28,6 +28,16 @@ class FakeCheckpointManager:
         )
 
 
+class NoChangeCheckpointManager(FakeCheckpointManager):
+    def defer_run_checkpoint(self, lane, **kwargs):
+        return {
+            "pending": False,
+            "should_flush": False,
+            "changed_files": [],
+            "pending_run_count": 0,
+        }
+
+
 def make_runtime(manager: FakeCheckpointManager, mode: str = "balanced"):
     runtime = SessionRuntime.__new__(SessionRuntime)
     runtime.config = SimpleNamespace(checkpoint_frequency_mode=mode)
@@ -123,3 +133,25 @@ async def test_manual_mode_keeps_successful_run_dirty_without_scheduling_flush()
 
     assert manager.checkpoint_calls == []
     assert emitted[0][1]["message"] == "代码修改尚未提交，请手动创建检查点"
+
+
+@pytest.mark.asyncio
+async def test_balanced_mode_ignores_successful_run_without_file_changes():
+    manager = NoChangeCheckpointManager({})
+    runtime = make_runtime(manager)
+    scheduled = []
+    emitted = []
+    runtime._schedule_checkpoint_flush = scheduled.append
+
+    async def emit(event, payload):
+        emitted.append((event, payload))
+
+    runtime._emit = emit
+
+    await runtime._handle_completed_run_checkpoint(
+        "main", RunResult(run_id="run-1", status="completed")
+    )
+
+    assert manager.checkpoint_calls == []
+    assert scheduled == []
+    assert emitted == []

@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 Role = Literal["user", "assistant", "tool"]
 
@@ -112,6 +112,8 @@ class Entry:
     role: Role = "user"
     content: EntryContent = ""
     timestamp: float = field(default_factory=time.time)
+    entry_type: str = "message"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_jsonl_dict(self) -> dict:
         """序列化为 JSONL 一行的 dict。"""
@@ -127,6 +129,8 @@ class Entry:
             "role": self.role,
             "content": content,
             "timestamp": self.timestamp,
+            "entry_type": self.entry_type,
+            "metadata": self.metadata,
         }
 
     @staticmethod
@@ -157,6 +161,8 @@ class Entry:
             role=role,
             content=content,
             timestamp=float(data["timestamp"]),
+            entry_type=str(data.get("entry_type", "message")),
+            metadata=dict(data.get("metadata") or {}),
         )
 
     def text_preview(self, limit: int = 80) -> str:
@@ -206,6 +212,8 @@ class Entry:
             "lane": self.lane,
             "seq": self.seq,
             "role": self.role,
+            "entry_type": self.entry_type,
+            "metadata": self.metadata,
             "content": self.text_preview(50),
             "full_content": self.content
             if isinstance(self.content, str)

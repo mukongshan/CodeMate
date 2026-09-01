@@ -103,6 +103,10 @@ class CreateSessionIn(BaseModel):
     title: Optional[str] = None
 
 
+class CompactSessionIn(BaseModel):
+    lane: Optional[str] = None
+
+
 class CreateWorkspaceIn(BaseModel):
     path: str
     title: Optional[str] = None

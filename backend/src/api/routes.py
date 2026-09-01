@@ -20,6 +20,7 @@ from ..errors.types import (
 )
 from .schemas import (
     CheckpointIn,
+    CompactSessionIn,
     CreateLaneIn,
     CreateSessionIn,
     CreateWorkspaceIn,
@@ -29,7 +30,7 @@ from .schemas import (
     RestoreCheckpointIn,
     UpdatePermissionGateIn,
 )
-from .session_service import SessionManager, SessionRuntime
+from .session_service import SessionBusyError, SessionManager, SessionRuntime
 from .workspace_files import list_directory, read_file
 
 router = APIRouter(prefix="/api")
@@ -201,6 +202,21 @@ def rename_session(
         return {"session": manager.rename_session(session_id, body.title)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/compact")
+async def compact_session(
+    session_id: str,
+    body: CompactSessionIn | None = None,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    try:
+        return await runtime.compact(body.lane if body else None)
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Lane 不存在") from exc
 
 
 @router.delete("/sessions/{session_id}", status_code=204, response_model=None)

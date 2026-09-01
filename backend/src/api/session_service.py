@@ -24,6 +24,8 @@ from ..agent.state import AgentState, RunResult
 from ..config import AppConfig
 from ..errors.types import AgentError
 from ..llm.client import LLMClient
+from ..memory.manager import MemoryManager
+from ..memory.project import load_project_context
 from ..observability.logger import StructuredLogger
 from ..permission.manager import PermissionManager, normalize_risk_level
 from ..storage.lane_manager import LaneManager
@@ -97,6 +99,17 @@ class SessionRuntime:
             config={"command_blacklist": config.command_blacklist},
         )
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
+        self.memory_manager = MemoryManager(
+            self.storage,
+            self.lane_manager,
+            self.llm_client,
+            active_workspace,
+            max_context_tokens=config.max_context_tokens,
+            reserve_tokens=config.context_reserve_tokens,
+            keep_recent_tokens=config.compaction_keep_recent_tokens,
+            summary_max_tokens=config.compaction_summary_max_tokens,
+            threshold_ratio=config.compaction_threshold_ratio,
+        )
         self._run_lock = asyncio.Lock()
         self._emit: Optional[EmitFn] = None
         self._emitter_token: Optional[str] = None
@@ -249,6 +262,9 @@ class SessionRuntime:
             "当前工作目录；不要把用户主仓库目录当成当前工作目录，也不要跨 Lane"
             "读取或修改文件。需要执行 Git 操作时，也必须在当前 Lane 工作目录中执行。"
         )
+        project_context = load_project_context(workspace)
+        if project_context:
+            system_prompt += "\n\n" + project_context
         return Agent(
             session_id=self.session_id,
             llm_client=self.llm_client,
@@ -259,7 +275,27 @@ class SessionRuntime:
             system_prompt=system_prompt,
             max_iterations=self.config.max_iterations,
             emit=self.emit,
+            memory_manager=self.memory_manager,
         )
+
+    async def compact(self, lane: Optional[str] = None) -> dict:
+        """手动压缩当前会话指定 Lane 的历史。"""
+        if self._run_lock.locked():
+            raise SessionBusyError("当前会话已有任务在执行，请等待完成")
+
+        async with self._run_lock:
+            target_lane = lane or self.lane_manager.current_lane
+            self.lane_manager.get_lane(target_lane)
+            self.permission_manager.set_workspace(self.workspace_for_lane(target_lane))
+            result = await self.memory_manager.compact_if_needed(
+                target_lane, reason="manual", force=True
+            )
+            result = result or {"status": "noop", "reason": "没有可压缩的历史"}
+            result["lane"] = target_lane
+            if result.get("status") in {"completed", "failed"}:
+                event = "compaction_completed" if result["status"] == "completed" else "compaction_failed"
+                await self.emit(event, result)
+            return result
 
     async def run(self, user_message: str, lane: Optional[str] = None) -> RunResult:
         """执行一次 run。同一 session 内串行——不允许并发。"""
@@ -324,6 +360,8 @@ class SessionRuntime:
                     self._cancel_checkpoint_flush(lane)
                     await self._emit_checkpoint_created(lane, checkpoint)
                 else:
+                    if not pending.get("pending", False):
+                        return
                     self._schedule_checkpoint_flush(lane)
                     await self.emit(
                         "lane_sync_state_changed",
@@ -331,7 +369,7 @@ class SessionRuntime:
                             "lane": lane,
                             "sync_state": "dirty",
                             "pending_checkpoint": True,
-                            "pending_run_count": pending["pending_run_count"],
+                            "pending_run_count": pending.get("pending_run_count", 0),
                             "changed_files": pending["changed_files"],
                             "next_flush_at": pending["next_flush_at"],
                             "message": "代码修改已暂存，连续任务将在检查点窗口结束后合并保存",
@@ -345,13 +383,15 @@ class SessionRuntime:
                     run_id=result.run_id,
                     conversation_entry_id=entry_id,
                 )
+                if not pending.get("pending", False):
+                    return
                 await self.emit(
                     "lane_sync_state_changed",
                     {
                         "lane": lane,
                         "sync_state": "dirty",
                         "pending_checkpoint": pending["pending"],
-                        "pending_run_count": pending["pending_run_count"],
+                        "pending_run_count": pending.get("pending_run_count", 0),
                         "changed_files": pending["changed_files"],
                         "message": "代码修改尚未提交，请手动创建检查点",
                     },

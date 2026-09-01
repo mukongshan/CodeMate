@@ -103,7 +103,7 @@ npm run dev
 - `glob` - 文件搜索
 - `grep` - 内容搜索
 - `list_directory` - 浏览目录直接子项
-- `web_search` - 搜索公共网页
+- `web_search` - 通过配置的搜索服务提供方搜索公共网页（支持博查、火山引擎）
 - `web_fetch` - 抓取公共网页正文
 
 ### 4. 三级权限控制与工具门禁
@@ -212,6 +212,19 @@ LLM_PROVIDER=openai  # 或 deepseek
 LLM_API_KEY=sk-...
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
+
+# 联网搜索（默认博查）
+WEB_SEARCH_PROVIDER=bocha
+BOCHA_API_KEY=your_bocha_api_key_here
+BOCHA_BASE_URL=https://api.bochaai.com
+BOCHA_SEARCH_FRESHNESS=noLimit
+BOCHA_SEARCH_SUMMARY=true
+
+# 火山引擎豆包搜索 Global 版（切换时设置 WEB_SEARCH_PROVIDER=volcengine）
+VOLCENGINE_SEARCH_API_KEY=your_volcengine_search_api_key_here
+VOLCENGINE_SEARCH_ENDPOINT=https://open.feedcoopapi.com/search_api/global_search
+VOLCENGINE_SEARCH_MAX_SNIPPET_LENGTH=1000
+VOLCENGINE_SEARCH_ICP_HOST_ONLY=false
 
 # 应用配置
 WORKSPACE=./workspace

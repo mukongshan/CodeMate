@@ -452,7 +452,12 @@ class GitLaneManager:
     ) -> dict:
         """登记一次成功 Run 的待检查点，并判断是否应立即合并提交。"""
         if not self.enabled:
-            return {"pending": False, "should_flush": False, "changed_files": []}
+            return {
+                "pending": False,
+                "should_flush": False,
+                "changed_files": [],
+                "pending_run_count": 0,
+            }
         binding = self.get_binding(lane)
         worktree = Path(binding.worktree_path)
         self._require_consistent(binding)
@@ -462,7 +467,12 @@ class GitLaneManager:
             self._clear_pending_checkpoint(binding)
             binding.sync_state = "clean"
             self.store.save_binding(binding)
-            return {"pending": False, "should_flush": False, "changed_files": []}
+            return {
+                "pending": False,
+                "should_flush": False,
+                "changed_files": [],
+                "pending_run_count": 0,
+            }
         if binding.pending_checkpoint_since is None:
             binding.pending_checkpoint_since = current
         binding.pending_checkpoint_last_run_at = current
@@ -480,7 +490,12 @@ class GitLaneManager:
         self, lane: str, *, now: Optional[float] = None
     ) -> dict:
         if not self.enabled:
-            return {"pending": False, "should_flush": False, "changed_files": []}
+            return {
+                "pending": False,
+                "should_flush": False,
+                "changed_files": [],
+                "pending_run_count": 0,
+            }
         binding = self.get_binding(lane)
         current = now if now is not None else time.time()
         changed_files = self._changed_paths(Path(binding.worktree_path))

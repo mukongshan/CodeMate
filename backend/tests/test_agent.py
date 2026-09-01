@@ -78,6 +78,47 @@ class TestAgentLoop:
         assert result.iterations == 1
 
     @pytest.mark.asyncio
+    async def test_empty_response_is_reported_as_error(self, agent, mock_llm_client):
+        """模型空回复不能被当成成功，也不应写入空 assistant 节点。"""
+        async def mock_chat(*args, **kwargs):
+            yield DoneEvent(stop_reason="stop", usage={"total_tokens": 1})
+
+        mock_llm_client.chat = mock_chat
+
+        result = await agent.run("请修改文件")
+
+        assert result.status == "error"
+        assert result.error == "模型返回了空回复，未执行任何工具操作"
+        assert not any(
+            message.role == "assistant" and not message.content
+            for message in agent.provider.get_context()
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_response_retries_with_explicit_continuation_prompt(
+        self, agent, mock_llm_client
+    ):
+        calls = []
+
+        async def mock_chat(messages, *args, **kwargs):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield DoneEvent(stop_reason="stop", usage={"total_tokens": 1})
+                return
+            yield TextDeltaEvent(text="已继续完成")
+            yield DoneEvent(stop_reason="stop", usage={"total_tokens": 2})
+
+        mock_llm_client.chat = mock_chat
+
+        result = await agent.run("请修改文件")
+
+        assert result.status == "completed"
+        assert result.final_text == "已继续完成"
+        assert len(calls) == 2
+        assert calls[1][-1].role == "user"
+        assert "立即调用合适的文件编辑工具" in (calls[1][-1].content or "")
+
+    @pytest.mark.asyncio
     async def test_max_iterations(self, agent, mock_llm_client):
         """测试达到最大迭代次数。"""
         # 模拟 LLM 一直要求调用工具

@@ -95,6 +95,10 @@ class AppConfig:
     cors_origins: list[str] = field(default_factory=list)
     max_iterations: int = 20
     max_context_tokens: int = 8000
+    context_reserve_tokens: int = 2000
+    compaction_keep_recent_tokens: int = 3000
+    compaction_summary_max_tokens: int = 1200
+    compaction_threshold_ratio: float = 0.8
     host: str = "127.0.0.1"
     port: int = 8000
     debug: bool = False
@@ -151,6 +155,10 @@ class AppConfig:
             ),
             max_iterations=_int_env("MAX_ITERATIONS", 20),
             max_context_tokens=_int_env("MAX_CONTEXT_TOKENS", 8000),
+            context_reserve_tokens=_int_env("CONTEXT_RESERVE_TOKENS", 2000),
+            compaction_keep_recent_tokens=_int_env("COMPACTION_KEEP_RECENT_TOKENS", 3000),
+            compaction_summary_max_tokens=_int_env("COMPACTION_SUMMARY_MAX_TOKENS", 1200),
+            compaction_threshold_ratio=_float_env("COMPACTION_THRESHOLD_RATIO", 0.8),
             host=os.getenv("HOST", "127.0.0.1"),
             port=_int_env("PORT", 8000),
             debug=_bool_env("DEBUG", False),

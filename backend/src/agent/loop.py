@@ -23,7 +23,13 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from ..errors.types import AgentError, LLMAPIError, ToolExecutionError, ValidationError
+from ..errors.types import (
+    CODE_LLM_ERROR,
+    AgentError,
+    LLMAPIError,
+    ToolExecutionError,
+    ValidationError,
+)
 from ..llm.client import LLMClient
 from ..llm.events import (
     DoneEvent,
@@ -37,6 +43,7 @@ from ..permission.manager import PermissionManager
 from ..storage.models import ToolResultBlock
 from ..tools.base import ToolResult
 from ..tools.registry import ToolRegistry
+from ..memory.manager import MemoryManager
 from .prompts import MAIN_SYSTEM_PROMPT
 from .providers import (
     EphemeralMessageProvider,
@@ -71,6 +78,7 @@ class Agent:
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         depth: int = 0,
         emit: Optional[EmitFn] = None,
+        memory_manager: Optional[MemoryManager] = None,
     ) -> None:
         self.session_id = session_id
         self.llm_client = llm_client
@@ -83,6 +91,7 @@ class Agent:
         # 显式传参而不是用线程局部变量，保证并发场景下互不污染
         self.depth = depth
         self.emit = emit
+        self.memory_manager = memory_manager
         self.state = AgentState.IDLE
         self.touched_paths: list[str] = []
 
@@ -243,15 +252,36 @@ class Agent:
         final_text = ""
         final_id: Optional[str] = None
         tools = self.tool_registry.get_tool_schemas()
+        empty_response_retries = 0
+        retry_prompt: Optional[str] = None
 
         while ctx.iteration < limit:
             ctx.iteration += 1
             await self._set_state(AgentState.CALLING_LLM)
 
+            compaction = None
+            if self.memory_manager is not None:
+                compaction = await self.memory_manager.compact_if_needed(
+                    ctx.lane, reason="threshold"
+                )
+                if compaction is not None and compaction.get("status") == "completed":
+                    await self._emit("compaction_completed", compaction)
+                elif compaction is not None and compaction.get("status") == "failed":
+                    await self._emit("compaction_failed", compaction)
+
             messages = self._build_messages()
+            if retry_prompt:
+                messages.append(Message(role="user", content=retry_prompt))
+                retry_prompt = None
+            estimated_tokens = (
+                self.memory_manager.estimated_tokens(ctx.lane)
+                if self.memory_manager is not None
+                else sum(len(m.content or "") // 4 for m in messages)
+            )
             await self._emit("context_loaded", {
                 "message_count": len(messages),
-                "total_tokens": sum(len(m.content or "") // 4 for m in messages)
+                "total_tokens": estimated_tokens,
+                "compaction_status": compaction.get("status") if compaction else None,
             })
 
             text_parts: list[str] = []
@@ -318,6 +348,40 @@ class Agent:
             assistant_text = "".join(text_parts)
             if assistant_text:
                 final_text = assistant_text
+
+            if not assistant_text and not tool_calls:
+                await self._emit(
+                    "message_end",
+                    {"message_id": message_id, "stop_reason": stop_reason},
+                )
+                if empty_response_retries < 1:
+                    empty_response_retries += 1
+                    retry_prompt = (
+                        "上一轮模型没有返回内容。请继续完成用户的原始任务："
+                        "不要只说明计划或重复读取文件；如果任务需要修改文件，"
+                        "请立即调用合适的文件编辑工具并完成修改，最后用简短文字汇报结果。"
+                    )
+                    logger.warning(
+                        "模型返回空回复，尝试恢复（第 %d 次）",
+                        empty_response_retries,
+                    )
+                    await self._emit(
+                        "llm_retry",
+                        {
+                            "reason": "empty_response",
+                            "attempt": empty_response_retries,
+                        },
+                    )
+                    continue
+                raise AgentError(
+                    message="模型返回了空回复，未执行任何工具操作",
+                    code=CODE_LLM_ERROR,
+                    details={
+                        "iteration": ctx.iteration,
+                        "stop_reason": stop_reason,
+                    },
+                    suggestions=["请重试本次请求", "确认模型支持工具调用"],
+                )
 
             # assistant 消息落树（含工具调用请求）
             assistant_msg = Message(

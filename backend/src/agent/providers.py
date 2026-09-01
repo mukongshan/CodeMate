@@ -39,7 +39,13 @@ class MessageProvider(Protocol):
 def entry_to_message(entry: Entry) -> Message:
     """把树节点转成 LLM 协议消息（01 号文档八节）。"""
     if isinstance(entry.content, str):
-        return Message(role=entry.role, content=entry.content)  # type: ignore[arg-type]
+        role = "system" if entry.entry_type in {"compaction", "branch_summary"} else entry.role
+        content = entry.content
+        if entry.entry_type == "compaction":
+            content = "[会话压缩摘要]\n" + content
+        elif entry.entry_type == "branch_summary":
+            content = "[分支摘要]\n" + content
+        return Message(role=role, content=content)  # type: ignore[arg-type]
 
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []
@@ -146,6 +152,10 @@ def repair_message_sequence(messages: list[Message]) -> list[Message]:
             idx += 1
             continue
 
+        if message.role == "assistant" and not message.content and not message.tool_calls:
+            idx += 1
+            continue
+
         if message.role == "assistant" and message.tool_calls:
             tool_call_ids = [tc.id for tc in message.tool_calls if tc.id]
             if len(tool_call_ids) != len(message.tool_calls):
@@ -202,6 +212,12 @@ class TreeMessageProvider:
         self.lane_manager = lane_manager
         self.lane = lane
         self.max_context_tokens = max_context_tokens
+
+    def get_context_entries(self) -> list[Entry]:
+        leaf_id = self.lane_manager.get_lane(self.lane).leaf_id
+        if leaf_id is None:
+            return []
+        return self.storage.get_context_entries(leaf_id)
 
     def get_context(self) -> list[Message]:
         leaf_id = self.lane_manager.get_lane(self.lane).leaf_id

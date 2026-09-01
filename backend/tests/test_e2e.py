@@ -45,6 +45,24 @@ class MockLLMClient:
             yield DoneEvent(stop_reason="stop", usage={"total_tokens": 5})
 
 
+def test_empty_assistant_history_is_removed_from_llm_messages():
+    messages = entries_to_messages(
+        [
+            Entry(id="user-1", role="user", content="请修改文件"),
+            Entry(id="assistant-empty", role="assistant", content=""),
+            Entry(id="assistant-tool", role="assistant", content=[
+                ToolUseBlock(id="call-1", name="read_file", arguments={"path": "a.py"})
+            ]),
+            Entry(id="tool-1", role="tool", content=[
+                ToolResultBlock(tool_call_id="call-1", content="内容")
+            ]),
+        ]
+    )
+
+    assert [message.role for message in messages] == ["user", "assistant", "tool"]
+    assert messages[1].tool_calls[0].id == "call-1"
+
+
 @pytest.fixture
 def temp_workspace():
     """创建临时工作目录。"""

@@ -232,34 +232,45 @@ class SessionStorage:
             current = entry.parent
         return None
 
+    def get_context_entries(self, leaf_id: str) -> list[Entry]:
+        """返回当前叶节点对应的有效上下文投影，保留最近压缩摘要。"""
+        full_path = self.get_history_path(leaf_id)
+        latest_index = -1
+        for index in range(len(full_path) - 1, -1, -1):
+            if full_path[index].entry_type == "compaction":
+                latest_index = index
+                break
+        if latest_index < 0:
+            return full_path
+
+        compaction = full_path[latest_index]
+        retained_ids = set(compaction.metadata.get("retained_entry_ids") or [])
+        retained = [entry for entry in full_path[:latest_index] if entry.id in retained_ids]
+        return [compaction, *retained, *full_path[latest_index + 1 :]]
+
     def get_context_window(
         self, leaf_id: str, max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     ) -> list[Entry]:
-        """从叶子向上取历史，直到 token 预算耗尽（02 号文档 4.2 节）。
+        """从有效上下文投影中保留最新消息，并确保工具调用成对。"""
+        full_path = self.get_context_entries(leaf_id)
+        if not full_path:
+            return []
 
-        返回根→叶顺序。当前不做历史压缩（02 号文档 4.4 节标注为可选），
-        预算耗尽就停止加载更早的消息。
-
-        一个必须处理的正确性问题：assistant(带 tool_use) 和紧随的
-        tool(带 tool_result) 是成对的，OpenAI 协议要求每个 tool_call_id 都有对应
-        的 tool 消息。如果截断点正好落在这一对中间，会发出协议非法的请求
-        （孤立的 tool 消息没有前置 assistant tool_calls）。所以截断后要做一次
-        配对修正。
-        """
-        full_path = self.get_history_path(leaf_id)
-
+        anchor: list[Entry] = []
+        start_index = 0
+        if full_path[0].entry_type == "compaction":
+            anchor = [full_path[0]]
+            start_index = 1
         selected: list[Entry] = []
-        used = 0
-        # 从最新往前收集
-        for entry in reversed(full_path):
+        used = sum(_entry_token_cost(entry) for entry in anchor)
+        for entry in reversed(full_path[start_index:]):
             cost = _entry_token_cost(entry)
             if selected and used + cost > max_tokens:
                 break
             selected.append(entry)
             used += cost
         selected.reverse()
-
-        return self._repair_tool_pairing(selected)
+        return self._repair_tool_pairing([*anchor, *selected])
 
     @staticmethod
     def _repair_tool_pairing(entries: list[Entry]) -> list[Entry]:
