@@ -24,15 +24,18 @@ from .schemas import (
     CreateLaneIn,
     CreateSessionIn,
     CreateWorkspaceIn,
+    GitCommitIn,
+    GitPathsIn,
     IntegrateLaneIn,
     PublishLaneIn,
     RenameIn,
     RenameLaneIn,
     RestoreCheckpointIn,
     UpdatePermissionGateIn,
+    WriteWorkspaceFileIn,
 )
 from .session_service import SessionBusyError, SessionManager, SessionRuntime
-from .workspace_files import list_directory, read_file
+from .workspace_files import list_directory, read_file, write_file
 
 router = APIRouter(prefix="/api")
 
@@ -299,6 +302,63 @@ def read_workspace_file(
     return payload
 
 
+@router.post("/sessions/{session_id}/workspace/file")
+def write_workspace_file(
+    session_id: str,
+    body: WriteWorkspaceFileIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    workspace = runtime.workspace_for_lane(runtime.lane_manager.current_lane)
+    payload = write_file(
+        workspace,
+        body.path,
+        body.content,
+        encoding=body.encoding,
+        expected_revision=body.expected_revision,
+    )
+    payload["lane"] = runtime.lane_manager.current_lane
+    return payload
+
+
+@router.post('/sessions/{session_id}/file-reviews/accept-all')
+def accept_all_file_reviews(
+    session_id: str,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return runtime.accept_file_reviews(runtime.lane_manager.current_lane)
+
+
+@router.post('/sessions/{session_id}/file-reviews/reject-all')
+def reject_all_file_reviews(
+    session_id: str,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return runtime.reject_file_reviews(runtime.lane_manager.current_lane)
+
+
+@router.post('/sessions/{session_id}/file-reviews/{review_id}/accept')
+def accept_file_review(
+    session_id: str,
+    review_id: str,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return runtime.accept_file_review(review_id, runtime.lane_manager.current_lane)
+
+
+@router.post('/sessions/{session_id}/file-reviews/{review_id}/reject')
+def reject_file_review(
+    session_id: str,
+    review_id: str,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return runtime.reject_file_review(review_id, runtime.lane_manager.current_lane)
+
+
 def _dialog_initial_dir(initial_path: str | None) -> Path:
     if initial_path:
         candidate = Path(initial_path).expanduser()
@@ -470,6 +530,37 @@ def lane_status(
     session_id: str, lane: str, manager: SessionManager = Depends(get_manager)
 ) -> dict:
     return _require_session(manager, session_id).lane_status(lane)
+
+
+@router.get("/sessions/{session_id}/lanes/{lane}/git/status")
+def git_status(session_id: str, lane: str, manager: SessionManager = Depends(get_manager)) -> dict:
+    return _require_session(manager, session_id).git_status(lane)
+
+
+@router.get("/sessions/{session_id}/lanes/{lane}/git/diff")
+def git_diff(
+    session_id: str,
+    lane: str,
+    path: str | None = Query(default=None),
+    staged: bool = Query(default=False),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    return _require_session(manager, session_id).git_diff(lane, path=path, staged=staged)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/git/stage")
+def git_stage(session_id: str, lane: str, body: GitPathsIn, manager: SessionManager = Depends(get_manager)) -> dict:
+    return _require_session(manager, session_id).git_stage(lane, body.paths)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/git/unstage")
+def git_unstage(session_id: str, lane: str, body: GitPathsIn, manager: SessionManager = Depends(get_manager)) -> dict:
+    return _require_session(manager, session_id).git_unstage(lane, body.paths)
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/git/commit")
+def git_commit(session_id: str, lane: str, body: GitCommitIn, manager: SessionManager = Depends(get_manager)) -> dict:
+    return _require_session(manager, session_id).git_commit(lane, body.message)
 
 
 @router.get("/sessions/{session_id}/lanes/{lane}/checkpoints")

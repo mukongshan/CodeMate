@@ -76,7 +76,8 @@ describe('CompareDrawer', () => {
     render(<CompareDrawer />);
 
     expect(await screen.findByText('src/app.ts')).toBeInTheDocument();
-    expect(await screen.findByText(/\+new/)).toBeInTheDocument();
+    expect((await screen.findByText('old')).parentElement).toHaveClass('bg-rose-50');
+    expect((await screen.findByText('new')).parentElement).toHaveClass('bg-emerald-50');
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('/compare/file?'),
       expect.objectContaining({ signal: expect.any(AbortSignal) })

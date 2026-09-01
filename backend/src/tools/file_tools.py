@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import difflib
+import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -341,7 +343,10 @@ class WriteFileTool(_WorkspaceTool):
             created=not existed,
             lines=line_count,
             file_change=_file_change_metadata(
-                self._rel(target), before_text, content, binary=binary
+                self._rel(target), before_text, content, binary=binary,
+                before_raw=before_raw if existed else None,
+                after_raw=target.read_bytes(),
+                before_exists=existed,
             ),
         )
 
@@ -426,7 +431,12 @@ class EditFileTool(_WorkspaceTool):
             f"已修改 {self._rel(target)}\n\n{diff}",
             path=self._rel(target),
             changes=changed,
-            file_change=_file_change_metadata(self._rel(target), text, updated),
+            file_change=_file_change_metadata(
+                self._rel(target), text, updated,
+                before_raw=raw,
+                after_raw=target.read_bytes(),
+                before_exists=True,
+            ),
         )
 
     def _no_match_result(self, target: Path, text: str, old: str) -> ToolResult:
@@ -518,7 +528,15 @@ def _file_change_metadata(
     after: str,
     *,
     binary: bool = False,
+    before_raw: Optional[bytes] = None,
+    after_raw: Optional[bytes] = None,
+    before_exists: bool = True,
 ) -> dict:
+    rollback = {
+        "before_base64": base64.b64encode(before_raw or b"").decode("ascii"),
+        "before_exists": before_exists,
+        "after_revision": hashlib.sha256(after_raw or after.encode("utf-8")).hexdigest(),
+    }
     if binary or before is None:
         return {
             "path": filename,
@@ -526,6 +544,7 @@ def _file_change_metadata(
             "diff": "",
             "added_lines": 0,
             "removed_lines": 0,
+            "rollback": rollback,
         }
 
     raw_diff = list(
@@ -549,4 +568,5 @@ def _file_change_metadata(
             1 for line in raw_diff if line.startswith("-") and not line.startswith("---")
         ),
         "truncated": len(raw_diff) > 60,
+        "rollback": rollback,
     }

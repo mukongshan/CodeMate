@@ -30,5 +30,16 @@ export function resetStore() {
     permissionRequest: null,
     runtimeError: null,
     toasts: [],
+    activeWorkbenchView: 'explorer',
+    sidePanelWidth: 280,
+    conversationWidth: 380,
+    terminalOpen: false,
+    terminalHeight: 260,
+    terminalSessionId: null,
+    terminalStatus: 'closed',
+    terminalOutput: '',
+    terminalError: null,
+    editorTabs: [],
+    activeEditorPath: null,
   });
 }

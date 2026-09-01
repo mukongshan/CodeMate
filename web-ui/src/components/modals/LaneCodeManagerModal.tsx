@@ -2,10 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { Archive, Check, GitBranch, GitMerge, History, Pencil, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { useStore } from '../../store';
 import type { CodeCheckpoint, CodeIntegration, CodeIntegrationPreview, LaneGitState, LanePointer } from '../../types';
+import ConfirmDialog from '../common/ConfirmDialog';
+import InputDialog from '../common/InputDialog';
 
 interface LaneCodeManagerModalProps {
   onClose: () => void;
 }
+
+interface ConfirmRequest { title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void | Promise<void>; }
+interface InputRequest { title: string; message?: string; defaultValue: string; onConfirm: (value: string) => void | Promise<void>; }
 
 function errorMessage(data: any, fallback: string): string {
   return data?.error?.message || fallback;
@@ -30,6 +35,8 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
   const [integrationPreview, setIntegrationPreview] = useState<CodeIntegrationPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [inputRequest, setInputRequest] = useState<InputRequest | null>(null);
 
   const selectedLanePointer = allLanes.find((lane) => lane.lane === selectedLane);
   const changedFiles = gitState?.changed_files || [];
@@ -137,26 +144,31 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     '代码检查点已保存'
   );
 
-  const restore = () => runAction(
+  const restoreAction = () => runAction(
     async () => {
       if (!selectedCheckpoint) throw new Error('请先选择检查点');
-      if (discardChanges && !window.confirm('恢复将放弃当前未保存修改，是否继续？')) return;
-      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/restore`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ checkpoint_id: selectedCheckpoint, discard_changes: discardChanges }),
-      });
+      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkpoint_id: selectedCheckpoint, discard_changes: discardChanges }) });
     },
     '已恢复代码检查点'
   );
 
-  const discard = () => runAction(
-    async () => {
-      if (!window.confirm('将永久放弃当前工作区的未保存修改，是否继续？')) return;
-      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/discard`, { method: 'POST' });
-    },
+  const restore = () => {
+    if (!selectedCheckpoint) { setMessage('请先选择检查点'); return; }
+    if (discardChanges) {
+      setConfirmRequest({ title: '恢复代码检查点', message: '恢复将放弃当前未保存修改，是否继续？', confirmLabel: '继续恢复', danger: true, onConfirm: restoreAction });
+      return;
+    }
+    void restoreAction();
+  };
+
+  const discardAction = () => runAction(
+    async () => { await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/discard`, { method: 'POST' }); },
     '未保存代码修改已放弃'
   );
+
+  const discard = () => {
+    setConfirmRequest({ title: '放弃未保存修改', message: '将永久放弃当前工作区的未保存修改，是否继续？', confirmLabel: '放弃修改', danger: true, onConfirm: discardAction });
+  };
 
   const publish = () => {
     let successMessage = 'Lane 已发布为普通 Git 分支';
@@ -198,9 +210,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     }
   };
 
-  const integrateLane = () => {
-    if (!integrationPreview || integrationPreview.target_dirty) return;
-    if (!window.confirm(`将 ${integrationPreview.source_branch} 集成到 ${integrationPreview.target_branch}，并在 main Lane 创建检查点，是否继续？`)) return;
+  const integrateLaneAction = () => {
     let successMessage = 'Lane 代码已集成到 main 分支';
     return runAction(
       async () => {
@@ -219,6 +229,11 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     );
   };
 
+  const integrateLane = () => {
+    if (!integrationPreview || integrationPreview.target_dirty) return;
+    setConfirmRequest({ title: '确认集成分支', message: `将 ${integrationPreview.source_branch} 集成到 ${integrationPreview.target_branch}，并在 main Lane 创建检查点，是否继续？`, confirmLabel: '确认集成', onConfirm: integrateLaneAction });
+  };
+
   const archiveOrRestore = () => runAction(
     async () => {
       const endpoint = selectedLanePointer?.archived ? 'restore-lane' : 'archive';
@@ -227,9 +242,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     selectedLanePointer?.archived ? 'Lane 已恢复' : 'Lane 已归档'
   );
 
-  const renameLane = async () => {
-    if (!sessionId || selectedLane === 'main') return;
-    const nextLane = window.prompt('新的 Lane 名称', selectedLane)?.trim();
+  const applyRenameLane = async (nextLane: string) => {
     if (!nextLane || nextLane === selectedLane) return;
     setBusy(true);
     setMessage('');
@@ -251,9 +264,13 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     }
   };
 
-  const deleteLane = async () => {
+  const renameLane = () => {
+    if (!sessionId || selectedLane === 'main') return;
+    setInputRequest({ title: '重命名 Lane', message: '请输入新的 Lane 名称。', defaultValue: selectedLane, onConfirm: applyRenameLane });
+  };
+
+  const applyDeleteLane = async () => {
     if (!sessionId || selectedLane === 'main' || selectedLane === currentLane) return;
-    if (!window.confirm(`删除 Lane“${selectedLane}”及其托管工作目录？对话树节点会保留。`)) return;
     setBusy(true);
     setMessage('');
     try {
@@ -268,6 +285,11 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     } finally {
       setBusy(false);
     }
+  };
+
+  const deleteLane = () => {
+    if (!sessionId || selectedLane === 'main' || selectedLane === currentLane) return;
+    setConfirmRequest({ title: '删除 Lane', message: `删除 Lane“${selectedLane}”及其托管工作目录？对话树节点会保留。`, confirmLabel: '删除 Lane', danger: true, onConfirm: applyDeleteLane });
   };
 
   const updatingPublishedBranch = Boolean(
@@ -286,7 +308,8 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     .slice(0, 3);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-surface-2 shadow-pop">
         <div className="flex items-center justify-between border-b border-border p-4">
           <div>
@@ -433,5 +456,8 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
         </div>
       </div>
     </div>
+    <ConfirmDialog open={Boolean(confirmRequest)} title={confirmRequest?.title || ''} message={confirmRequest?.message || ''} confirmLabel={confirmRequest?.confirmLabel} danger={confirmRequest?.danger} busy={busy} onCancel={() => setConfirmRequest(null)} onConfirm={() => { const request = confirmRequest; setConfirmRequest(null); if (request) void request.onConfirm(); }} />
+    <InputDialog open={Boolean(inputRequest)} title={inputRequest?.title || ''} message={inputRequest?.message} defaultValue={inputRequest?.defaultValue} busy={busy} onCancel={() => setInputRequest(null)} onConfirm={(value) => { const request = inputRequest; setInputRequest(null); if (request) void request.onConfirm(value); }} />
+    </>
   );
 }

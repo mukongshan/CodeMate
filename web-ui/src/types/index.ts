@@ -147,8 +147,36 @@ export interface WorkspaceFilePayload {
   binary: boolean;
   size: number;
   lines: number | null;
+  revision: string;
   workspace: string;
   lane: string;
+}
+
+export type WorkbenchView = 'explorer' | 'history' | 'source-control' | 'search';
+
+export type TerminalStatus = 'closed' | 'connecting' | 'ready' | 'running' | 'exited' | 'error';
+
+export interface EditorTab {
+  path: string;
+  name: string;
+  content: string | null;
+  originalContent: string | null;
+  encoding: string | null;
+  revision: string | null;
+  binary: boolean;
+  size: number | null;
+  lines: number | null;
+  loading: boolean;
+  dirty: boolean;
+  saving: boolean;
+  error?: string;
+}
+
+export interface GitStatusFile {
+  path: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
 }
 
 export interface LaneCodeComparison {

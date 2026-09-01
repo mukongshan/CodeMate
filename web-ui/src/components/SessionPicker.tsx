@@ -12,6 +12,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useStore } from '../store';
+import ConfirmDialog from './common/ConfirmDialog';
+import InputDialog from './common/InputDialog';
 
 interface WorkspaceSummary {
   workspace_id: string;
@@ -29,6 +31,21 @@ interface SessionSummary {
   updated_at: number;
   loaded: boolean;
   workspace: string;
+}
+
+interface ConfirmRequest {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void | Promise<void>;
+}
+
+interface InputRequest {
+  title: string;
+  message?: string;
+  defaultValue: string;
+  onConfirm: (value: string) => void | Promise<void>;
 }
 
 function formatRelativeTime(timestampSeconds: number): string {
@@ -62,6 +79,8 @@ export default function SessionPicker() {
   const [busy, setBusy] = useState(false);
   const [pickingDirectory, setPickingDirectory] = useState(false);
   const [error, setError] = useState('');
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [inputRequest, setInputRequest] = useState<InputRequest | null>(null);
 
   const selectedWorkspace = workspaces.find(
     (workspace) => workspace.workspace_id === selectedWorkspaceId
@@ -200,11 +219,9 @@ export default function SessionPicker() {
     }
   };
 
-  const renameWorkspace = async () => {
-    if (!selectedWorkspace) return;
-    const title = window.prompt('新的工作区名称', selectedWorkspace.title)?.trim();
-    if (!title || title === selectedWorkspace.title) return;
-    const response = await fetch(`/api/workspaces/${selectedWorkspace.workspace_id}`, {
+  const applyRenameWorkspace = async (workspace: WorkspaceSummary, title: string) => {
+    if (!title || title === workspace.title) return;
+    const response = await fetch(`/api/workspaces/${workspace.workspace_id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -216,14 +233,14 @@ export default function SessionPicker() {
     await loadWorkspaces();
   };
 
-  const removeWorkspace = async () => {
+  const renameWorkspace = () => {
     if (!selectedWorkspace) return;
-    if (selectedWorkspace.session_count > 0) {
-      setError('工作区仍包含会话，请先删除这些会话');
-      return;
-    }
-    if (!window.confirm(`从 CodeMate 移除“${selectedWorkspace.title}”？磁盘目录不会被删除。`)) return;
-    const response = await fetch(`/api/workspaces/${selectedWorkspace.workspace_id}`, {
+    const workspace = selectedWorkspace;
+    setInputRequest({ title: '重命名工作区', message: '请输入新的工作区名称。', defaultValue: workspace.title, onConfirm: (title) => applyRenameWorkspace(workspace, title) });
+  };
+
+  const applyRemoveWorkspace = async (workspace: WorkspaceSummary) => {
+    const response = await fetch(`/api/workspaces/${workspace.workspace_id}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -235,8 +252,17 @@ export default function SessionPicker() {
     await loadWorkspaces();
   };
 
-  const renameSession = async (session: SessionSummary) => {
-    const title = window.prompt('新的会话名称', session.title)?.trim();
+  const removeWorkspace = () => {
+    if (!selectedWorkspace) return;
+    if (selectedWorkspace.session_count > 0) {
+      setError('工作区仍包含会话，请先删除这些会话');
+      return;
+    }
+    const workspace = selectedWorkspace;
+    setConfirmRequest({ title: '移除工作区', message: `从 CodeMate 移除“${workspace.title}”？磁盘目录不会被删除。`, confirmLabel: '移除', danger: true, onConfirm: () => applyRemoveWorkspace(workspace) });
+  };
+
+  const applyRenameSession = async (session: SessionSummary, title: string) => {
     if (!title || title === session.title) return;
     const response = await fetch(`/api/sessions/${session.session_id}`, {
       method: 'PATCH',
@@ -250,8 +276,11 @@ export default function SessionPicker() {
     if (selectedWorkspaceId) await loadSessions(selectedWorkspaceId);
   };
 
-  const deleteSession = async (session: SessionSummary) => {
-    if (!window.confirm(`彻底删除会话“${session.title}”及其托管 Lane 工作目录？`)) return;
+  const renameSession = (session: SessionSummary) => {
+    setInputRequest({ title: '重命名会话', message: '请输入新的会话名称。', defaultValue: session.title, onConfirm: (title) => applyRenameSession(session, title) });
+  };
+
+  const applyDeleteSession = async (session: SessionSummary) => {
     const response = await fetch(`/api/sessions/${session.session_id}`, {
       method: 'DELETE',
     });
@@ -263,6 +292,10 @@ export default function SessionPicker() {
       await loadSessions(selectedWorkspaceId);
       await loadWorkspaces();
     }
+  };
+
+  const deleteSession = (session: SessionSummary) => {
+    setConfirmRequest({ title: '删除会话', message: `彻底删除会话“${session.title}”及其托管 Lane 工作目录？`, confirmLabel: '彻底删除', danger: true, onConfirm: () => applyDeleteSession(session) });
   };
 
   if (loading) {
@@ -528,6 +561,8 @@ export default function SessionPicker() {
           </div>
         )}
       </section>
+      <ConfirmDialog open={Boolean(confirmRequest)} title={confirmRequest?.title || ''} message={confirmRequest?.message || ''} confirmLabel={confirmRequest?.confirmLabel} danger={confirmRequest?.danger} onCancel={() => setConfirmRequest(null)} onConfirm={() => { const request = confirmRequest; setConfirmRequest(null); if (request) void request.onConfirm(); }} />
+      <InputDialog open={Boolean(inputRequest)} title={inputRequest?.title || ''} message={inputRequest?.message} defaultValue={inputRequest?.defaultValue} onCancel={() => setInputRequest(null)} onConfirm={(value) => { const request = inputRequest; setInputRequest(null); if (request) void request.onConfirm(value); }} />
     </main>
   );
 }

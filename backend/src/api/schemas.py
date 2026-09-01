@@ -126,6 +126,21 @@ class CreateLaneIn(BaseModel):
     description: Optional[str] = None
 
 
+class WriteWorkspaceFileIn(BaseModel):
+    path: str
+    content: str
+    encoding: Optional[str] = None
+    expected_revision: Optional[str] = None
+
+
+class GitPathsIn(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+
+
+class GitCommitIn(BaseModel):
+    message: str
+
+
 class CheckpointIn(BaseModel):
     paths: Optional[list[str]] = None
     allow_blocked: bool = False

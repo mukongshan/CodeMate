@@ -12,6 +12,7 @@ from main import create_app
 from src.config import AppConfig
 from src.api import routes as api_routes
 from src.api.ws import _handle_message
+from src.tools.file_tools import EditFileTool, WriteFileTool
 
 
 @pytest.fixture
@@ -384,6 +385,47 @@ class TestFilesystemAPI:
         assert response.status_code == 200
         assert response.json()["binary"] is True
         assert response.json()["content"] is None
+
+
+@pytest.mark.asyncio
+async def test_file_review_reject_all_rolls_back_multiple_edits(client, test_app, temp_dir):
+    workspace = temp_dir / "review-workspace"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("one\n", encoding="utf-8")
+    runtime = test_app.state.session_manager.create("review-actions", str(workspace))
+    tool = EditFileTool(workspace)
+
+    first = await tool.execute(path="note.txt", old_string="one", new_string="two")
+    payload = {"call_id": "review-1", "status": "success", "metadata": first.metadata}
+    runtime._capture_file_review(payload, "main")
+    second = await tool.execute(path="note.txt", old_string="two", new_string="three")
+    payload = {"call_id": "review-2", "status": "success", "metadata": second.metadata}
+    runtime._capture_file_review(payload, "main")
+
+    response = client.post("/api/sessions/review-actions/file-reviews/reject-all")
+
+    assert response.status_code == 200
+    assert response.json()["review_ids"] == ["review-1", "review-2"]
+    assert target.read_text(encoding="utf-8") == "one\n"
+    assert runtime._pending_file_reviews == {}
+
+
+@pytest.mark.asyncio
+async def test_file_review_reject_new_file_deletes_it(client, test_app, temp_dir):
+    workspace = temp_dir / "new-file-review-workspace"
+    workspace.mkdir()
+    runtime = test_app.state.session_manager.create("new-file-review", str(workspace))
+    tool = WriteFileTool(workspace)
+
+    result = await tool.execute(path="created.txt", content="created\n")
+    payload = {"call_id": "review-new", "status": "success", "metadata": result.metadata}
+    runtime._capture_file_review(payload, "main")
+
+    response = client.post("/api/sessions/new-file-review/file-reviews/review-new/reject")
+
+    assert response.status_code == 200
+    assert not (workspace / "created.txt").exists()
 
 
 class TestLaneAPI:

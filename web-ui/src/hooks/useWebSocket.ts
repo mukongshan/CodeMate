@@ -28,6 +28,10 @@ export function useWebSocket(sessionId: string | null) {
     setRuntimeError,
     clearRuntimeError,
     addToast,
+    setTerminalSession,
+    appendTerminalOutput,
+    clearTerminalOutput,
+    setTerminalError,
   } = useStore();
 
   const syncSessionSnapshot = useCallback(async () => {
@@ -286,6 +290,8 @@ export function useWebSocket(sessionId: string | null) {
           message: `代码检查点 ${data.short_head || data.checkpoint_id} 已保存`,
         });
         void syncSessionSnapshot();
+        window.dispatchEvent(new Event('codemate:refresh-workspace'));
+        window.dispatchEvent(new Event('codemate:refresh-source-control'));
         break;
 
       case 'lane_code_integrated':
@@ -294,6 +300,8 @@ export function useWebSocket(sessionId: string | null) {
           message: `${data.source_branch || data.lane} 已集成到 ${data.target_branch || 'main'}`,
         });
         void syncSessionSnapshot();
+        window.dispatchEvent(new Event('codemate:refresh-workspace'));
+        window.dispatchEvent(new Event('codemate:refresh-source-control'));
         break;
 
       case 'lane_sync_state_changed':
@@ -302,6 +310,31 @@ export function useWebSocket(sessionId: string | null) {
           message: data.message || `${data.lane} 存在未保存的代码修改`,
         });
         void syncSessionSnapshot();
+        window.dispatchEvent(new Event('codemate:refresh-workspace'));
+        window.dispatchEvent(new Event('codemate:refresh-source-control'));
+        break;
+
+      case 'terminal_ready':
+        setTerminalSession(data.terminal_id || null, 'ready');
+        setTerminalError(null);
+        break;
+
+      case 'terminal_output':
+        appendTerminalOutput(data.text || '');
+        break;
+
+      case 'terminal_exit':
+        setTerminalSession(null, 'exited');
+        addToast({ type: 'info', message: '终端进程已退出（' + (data.exit_code ?? '未知') + '）' });
+        break;
+
+      case 'terminal_closed':
+        setTerminalSession(null, 'closed');
+        break;
+
+      case 'terminal_error':
+        setTerminalError(data.message || '终端操作失败');
+        addToast({ type: 'warning', message: data.message || '终端操作失败' });
         break;
 
       case 'run_error':
@@ -402,10 +435,47 @@ export function useWebSocket(sessionId: string | null) {
     return true;
   };
 
+  const openTerminal = () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      addToast({ type: 'warning', message: '连接尚未就绪，暂时无法打开终端' });
+      return false;
+    }
+    clearTerminalOutput();
+    setTerminalSession(null, 'connecting');
+    wsRef.current.send(JSON.stringify({ type: 'terminal_open', lane: useStore.getState().currentLane }));
+    return true;
+  };
+
+  const sendTerminalInput = (text: string) => {
+    const terminalId = useStore.getState().terminalSessionId;
+    if (!terminalId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify({ type: 'terminal_input', terminal_id: terminalId, text }));
+    return true;
+  };
+
+  const signalTerminal = (signal = 'interrupt') => {
+    const terminalId = useStore.getState().terminalSessionId;
+    if (!terminalId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify({ type: 'terminal_signal', terminal_id: terminalId, signal }));
+    return true;
+  };
+
+  const closeTerminal = () => {
+    const terminalId = useStore.getState().terminalSessionId;
+    if (terminalId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'terminal_close', terminal_id: terminalId }));
+    }
+    setTerminalSession(null, 'closed');
+  };
+
   return {
     sendMessage,
     sendPermissionResponse,
     interruptRun,
     compactSession,
+    openTerminal,
+    sendTerminalInput,
+    signalTerminal,
+    closeTerminal,
   };
 }

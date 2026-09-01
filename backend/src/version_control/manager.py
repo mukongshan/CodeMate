@@ -336,6 +336,95 @@ class GitLaneManager:
             "blocked_files": blocked,
         }
 
+    def git_status(self, lane: str) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason, "files": []}
+        workspace = self.active_workspace(lane)
+        self.get_binding(lane)
+        raw = self._git_output(["status", "--short", "-z"], cwd=workspace)
+        files: list[dict] = []
+        for item in raw.split("\0"):
+            if not item:
+                continue
+            code = item[:2]
+            path = item[3:] if len(item) > 3 else ""
+            if not path:
+                continue
+            files.append({
+                "path": path,
+                "status": code.strip() or "?",
+                "staged": code[0] not in {" ", "?"},
+                "unstaged": code[1] not in {" ", "?"},
+            })
+        return {
+            "enabled": True,
+            "lane": lane,
+            "workspace": str(workspace),
+            "branch": self._git_output(["branch", "--show-current"], cwd=workspace),
+            "head_commit": self._git_output(["rev-parse", "HEAD"], cwd=workspace),
+            "files": files,
+        }
+
+    def git_diff(self, lane: str, path: str | None = None, staged: bool = False) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason, "diff": ""}
+        workspace = self.active_workspace(lane)
+        self.get_binding(lane)
+        relative_paths = self._validate_git_paths(workspace, [path] if path else [])
+        args = ["diff"]
+        if staged:
+            args.append("--cached")
+        args.extend(["--", *relative_paths] if relative_paths else [])
+        result = self._git(args, cwd=workspace)
+        return {"enabled": True, "lane": lane, "path": path, "staged": staged, "diff": result.stdout[:_MAX_DIFF_CHARS], "truncated": len(result.stdout) > _MAX_DIFF_CHARS}
+
+    def git_stage(self, lane: str, paths: list[str]) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason}
+        workspace = self.active_workspace(lane)
+        self.get_binding(lane)
+        selected = self._validate_git_paths(workspace, paths)
+        if not selected:
+            raise AgentError(message="至少选择一个文件", code=CODE_GIT_OPERATION_FAILED)
+        self._git(["add", "--all", "--", *selected], cwd=workspace)
+        return self.git_status(lane)
+
+    def git_unstage(self, lane: str, paths: list[str]) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason}
+        workspace = self.active_workspace(lane)
+        self.get_binding(lane)
+        selected = self._validate_git_paths(workspace, paths)
+        if not selected:
+            raise AgentError(message="至少选择一个文件", code=CODE_GIT_OPERATION_FAILED)
+        self._git(["reset", "HEAD", "--", *selected], cwd=workspace)
+        return self.git_status(lane)
+
+    def git_commit(self, lane: str, message: str) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason}
+        workspace = self.active_workspace(lane)
+        self.get_binding(lane)
+        commit_message = message.strip()
+        if not commit_message:
+            raise AgentError(message="提交信息不能为空", code=CODE_GIT_OPERATION_FAILED)
+        self._git(["commit", "-m", commit_message], cwd=workspace)
+        return self.git_status(lane)
+
+    def _validate_git_paths(self, workspace: Path, paths: list[str]) -> list[str]:
+        selected: list[str] = []
+        for value in paths:
+            relative = str(value or "").strip().replace("\\", "/")
+            if not relative or relative == "." or relative.startswith("/") or ".." in Path(relative).parts or ".git" in Path(relative).parts:
+                raise AgentError(message=f"非法 Git 路径: {value}", code=CODE_GIT_OPERATION_FAILED)
+            candidate = (workspace / relative).resolve(strict=False)
+            try:
+                candidate.relative_to(workspace.resolve())
+            except ValueError as exc:
+                raise AgentError(message=f"Git 路径超出当前 Lane 工作区: {value}", code=CODE_GIT_OPERATION_FAILED) from exc
+            selected.append(relative)
+        return selected
+
     def checkpoint(
         self,
         lane: str,

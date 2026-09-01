@@ -11,6 +11,9 @@ import type {
   RuntimeErrorNotice,
   Toast,
   MemoryBudget,
+  EditorTab,
+  WorkbenchView,
+  TerminalStatus,
 } from '../types';
 
 interface AppState {
@@ -52,6 +55,19 @@ interface AppState {
   runtimeError: RuntimeErrorNotice | null;
   toasts: Toast[];
 
+  // 工作台状态
+  activeWorkbenchView: WorkbenchView | null;
+  sidePanelWidth: number;
+  conversationWidth: number;
+  terminalOpen: boolean;
+  terminalHeight: number;
+  terminalSessionId: string | null;
+  terminalStatus: TerminalStatus;
+  terminalOutput: string;
+  terminalError: string | null;
+  editorTabs: EditorTab[];
+  activeEditorPath: string | null;
+
   // Actions
   setSession: (sessionId: string, data: any) => void;
   clearSession: () => void;
@@ -77,6 +93,7 @@ interface AppState {
   updateToolCall: (callId: string, update: Partial<ToolCall>) => void;
   addFileReview: (review: FileReview) => void;
   acceptFileReview: (reviewId: string) => void;
+  acceptFileReviews: (reviewIds: string[]) => void;
   clearFileReviews: () => void;
   updateSubagent: (subagentId: string, update: Partial<SubAgent>) => void;
   clearSubagents: () => void;
@@ -92,6 +109,22 @@ interface AppState {
   setPermissionRequest: (request: PermissionRequest | null) => void;
   setRuntimeError: (error: RuntimeErrorNotice | null) => void;
   clearRuntimeError: () => void;
+
+  setWorkbenchView: (view: WorkbenchView | null) => void;
+  setSidePanelWidth: (width: number) => void;
+  setConversationWidth: (width: number) => void;
+  setTerminalOpen: (open: boolean) => void;
+  setTerminalHeight: (height: number) => void;
+  setTerminalSession: (sessionId: string | null, status: TerminalStatus) => void;
+  setTerminalOutput: (output: string) => void;
+  appendTerminalOutput: (output: string) => void;
+  clearTerminalOutput: () => void;
+  setTerminalError: (error: string | null) => void;
+  openEditorTab: (tab: EditorTab) => void;
+  updateEditorTab: (path: string, update: Partial<EditorTab>) => void;
+  setEditorContent: (path: string, content: string) => void;
+  closeEditorTab: (path: string) => void;
+  setActiveEditorPath: (path: string | null) => void;
 
   addToast: (toast: Omit<Toast, 'id'>) => void;
   removeToast: (id: string) => void;
@@ -138,6 +171,18 @@ export const useStore = create<AppState>((set) => ({
   runtimeError: null,
   toasts: [],
 
+  activeWorkbenchView: 'explorer',
+  sidePanelWidth: 280,
+  conversationWidth: 380,
+  terminalOpen: false,
+  terminalHeight: 260,
+  terminalSessionId: null,
+  terminalStatus: 'closed',
+  terminalOutput: '',
+  terminalError: null,
+  editorTabs: [],
+  activeEditorPath: null,
+
   // Actions
   setSession: (sessionId, data) =>
     set((state) => {
@@ -163,6 +208,9 @@ export const useStore = create<AppState>((set) => ({
         selectedNodeId: null,
         permissionRequest: resetTransient ? null : state.permissionRequest,
         runtimeError: resetTransient ? null : state.runtimeError,
+        activeWorkbenchView: resetTransient ? 'explorer' : state.activeWorkbenchView,
+        editorTabs: resetTransient ? [] : state.editorTabs,
+        activeEditorPath: resetTransient ? null : state.activeEditorPath,
       };
     }),
 
@@ -201,6 +249,17 @@ export const useStore = create<AppState>((set) => ({
       runtimeError: null,
       wsConnected: false,
       wsReconnecting: false,
+      activeWorkbenchView: 'explorer',
+      sidePanelWidth: 280,
+      conversationWidth: 380,
+      terminalOpen: false,
+      terminalHeight: 260,
+      terminalSessionId: null,
+      terminalStatus: 'closed',
+      terminalOutput: '',
+      terminalError: null,
+      editorTabs: [],
+      activeEditorPath: null,
     }),
 
   setCurrentLane: (lane) =>
@@ -375,6 +434,13 @@ export const useStore = create<AppState>((set) => ({
       return { fileReviews };
     }),
 
+  acceptFileReviews: (reviewIds) =>
+    set((state) => {
+      const fileReviews = new Map(state.fileReviews);
+      for (const reviewId of reviewIds) fileReviews.delete(reviewId);
+      return { fileReviews };
+    }),
+
   clearFileReviews: () => set({ fileReviews: new Map() }),
 
   updateSubagent: (subagentId, update) =>
@@ -402,6 +468,43 @@ export const useStore = create<AppState>((set) => ({
   setPermissionRequest: (request) => set({ permissionRequest: request }),
   setRuntimeError: (error) => set({ runtimeError: error }),
   clearRuntimeError: () => set({ runtimeError: null }),
+
+  setWorkbenchView: (view) => set({ activeWorkbenchView: view }),
+  setSidePanelWidth: (width) => set({ sidePanelWidth: Math.max(220, Math.min(480, width)) }),
+  setConversationWidth: (width) => set({ conversationWidth: Math.max(320, Math.min(560, width)) }),
+  setTerminalOpen: (open) => set({ terminalOpen: open }),
+  setTerminalHeight: (height) => set({ terminalHeight: Math.max(160, Math.min(520, height)) }),
+  setTerminalSession: (terminalSessionId, terminalStatus) => set({ terminalSessionId, terminalStatus, terminalError: terminalStatus === 'error' ? '终端启动失败' : null }),
+  setTerminalOutput: (terminalOutput) => set({ terminalOutput }),
+  appendTerminalOutput: (output) => set((state) => ({ terminalOutput: (state.terminalOutput + output).slice(-200000) })),
+  clearTerminalOutput: () => set({ terminalOutput: '' }),
+  setTerminalError: (terminalError) => set({ terminalError, terminalStatus: terminalError ? 'error' : 'ready' }),
+  openEditorTab: (tab) =>
+    set((state) => ({
+      editorTabs: state.editorTabs.some((item) => item.path === tab.path)
+        ? state.editorTabs.map((item) => (item.path === tab.path ? { ...item, ...tab } : item))
+        : [...state.editorTabs, tab],
+      activeEditorPath: tab.path,
+    })),
+  updateEditorTab: (path, update) =>
+    set((state) => ({
+      editorTabs: state.editorTabs.map((tab) => (tab.path === path ? { ...tab, ...update } : tab)),
+    })),
+  setEditorContent: (path, content) =>
+    set((state) => ({
+      editorTabs: state.editorTabs.map((tab) =>
+        tab.path === path ? { ...tab, content, dirty: content !== tab.originalContent, error: undefined } : tab,
+      ),
+    })),
+  closeEditorTab: (path) =>
+    set((state) => {
+      const remaining = state.editorTabs.filter((tab) => tab.path !== path);
+      const nextActive = state.activeEditorPath === path
+        ? remaining.at(-1)?.path || null
+        : state.activeEditorPath;
+      return { editorTabs: remaining, activeEditorPath: nextActive };
+    }),
+  setActiveEditorPath: (path) => set({ activeEditorPath: path }),
 
   addToast: (toast) =>
     set((state) => ({

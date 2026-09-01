@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FileCode2, GitCompare, Loader2, MessageSquareText, X } from 'lucide-react';
 import { useStore } from '../../store';
 import type { CodeDiffFile, LaneCodeComparison } from '../../types';
+import UnifiedDiffViewer from '../common/UnifiedDiffViewer';
 
 interface ConversationEntry {
   id: string;
@@ -54,6 +55,8 @@ export default function CompareDrawer() {
   const [activeTab, setActiveTab] = useState<CompareTab>('code');
   const [selectedFile, setSelectedFile] = useState<CodeDiffFile | null>(null);
   const [fileDiff, setFileDiff] = useState('');
+  const [fileBinary, setFileBinary] = useState(false);
+  const [fileDiffTruncated, setFileDiffTruncated] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
 
   useEffect(() => {
@@ -74,6 +77,8 @@ export default function CompareDrawer() {
       setError('');
       setSelectedFile(null);
       setFileDiff('');
+      setFileBinary(false);
+      setFileDiffTruncated(false);
       try {
         const params = new URLSearchParams({ a: laneA, b: laneB });
         const response = await fetch(
@@ -110,6 +115,8 @@ export default function CompareDrawer() {
     const loadFileDiff = async () => {
       setFileLoading(true);
       setFileDiff('');
+      setFileBinary(false);
+      setFileDiffTruncated(false);
       try {
         const params = new URLSearchParams({
           a: laneA,
@@ -124,7 +131,9 @@ export default function CompareDrawer() {
         if (!response.ok) {
           throw new Error(data.error?.message || `加载代码差异失败：HTTP ${response.status}`);
         }
-        setFileDiff(data.binary ? '二进制文件无法显示文本差异。' : data.diff || '文件内容没有文本差异。');
+        setFileDiff(data.diff || '');
+        setFileBinary(Boolean(data.binary));
+        setFileDiffTruncated(Boolean(data.truncated));
       } catch (loadError) {
         if ((loadError as Error).name !== 'AbortError') {
           setFileDiff(loadError instanceof Error ? loadError.message : '代码差异加载失败');
@@ -241,13 +250,18 @@ export default function CompareDrawer() {
                     </button>
                   ))}
                 </div>
-                <div className="min-w-0 flex-1 overflow-auto bg-[#0d1117]">
+                <div className="min-w-0 flex-1 overflow-auto bg-surface-1 p-3">
                   {fileLoading ? (
-                    <div className="flex h-full items-center justify-center gap-2 text-slate-400"><Loader2 className="h-4 w-4 animate-spin" />加载代码差异</div>
+                    <div className="flex h-full items-center justify-center gap-2 text-text-muted"><Loader2 className="h-4 w-4 animate-spin" />加载代码差异</div>
                   ) : selectedFile ? (
-                    <pre className="min-h-full whitespace-pre p-4 font-mono text-xs leading-5 text-slate-200">{fileDiff}</pre>
+                    <UnifiedDiffViewer
+                      diff={fileDiff}
+                      binary={fileBinary}
+                      truncated={fileDiffTruncated}
+                      className="min-h-full max-h-full rounded-md"
+                    />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-slate-400">选择文件查看代码差异</div>
+                    <div className="flex h-full items-center justify-center text-text-muted">选择文件查看代码差异</div>
                   )}
                 </div>
               </div>

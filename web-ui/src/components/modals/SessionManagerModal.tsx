@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Clock, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useStore } from '../../store';
+import ConfirmDialog from '../common/ConfirmDialog';
+import InputDialog from '../common/InputDialog';
 
 interface SessionManagerModalProps {
   onClose: () => void;
@@ -14,6 +16,9 @@ interface SessionSummary {
   loaded: boolean;
   workspace: string;
 }
+
+interface ConfirmRequest { title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void | Promise<void>; }
+interface InputRequest { title: string; message?: string; defaultValue: string; onConfirm: (value: string) => void | Promise<void>; }
 
 function formatRelativeTime(timestampSeconds: number): string {
   const diff = Date.now() - timestampSeconds * 1000;
@@ -40,6 +45,8 @@ export default function SessionManagerModal({ onClose }: SessionManagerModalProp
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const [inputRequest, setInputRequest] = useState<InputRequest | null>(null);
 
   useEffect(() => {
     void loadSessions();
@@ -110,8 +117,7 @@ export default function SessionManagerModal({ onClose }: SessionManagerModalProp
     }
   };
 
-  const renameSession = async (session: SessionSummary) => {
-    const title = window.prompt('新的会话名称', session.title)?.trim();
+  const applyRenameSession = async (session: SessionSummary, title: string) => {
     if (!title || title === session.title) return;
     const response = await fetch(`/api/sessions/${session.session_id}`, {
       method: 'PATCH',
@@ -125,8 +131,11 @@ export default function SessionManagerModal({ onClose }: SessionManagerModalProp
     await loadSessions();
   };
 
-  const deleteSession = async (session: SessionSummary) => {
-    if (!window.confirm(`彻底删除会话"${session.title}"及其托管 Lane 工作目录？`)) return;
+  const renameSession = (session: SessionSummary) => {
+    setInputRequest({ title: '重命名会话', message: '请输入新的会话名称。', defaultValue: session.title, onConfirm: (title) => applyRenameSession(session, title) });
+  };
+
+  const applyDeleteSession = async (session: SessionSummary) => {
     const response = await fetch(`/api/sessions/${session.session_id}`, {
       method: 'DELETE',
     });
@@ -141,6 +150,10 @@ export default function SessionManagerModal({ onClose }: SessionManagerModalProp
       return;
     }
     await loadSessions();
+  };
+
+  const deleteSession = (session: SessionSummary) => {
+    setConfirmRequest({ title: '删除会话', message: `彻底删除会话"${session.title}"及其托管 Lane 工作目录？`, confirmLabel: '彻底删除', danger: true, onConfirm: () => applyDeleteSession(session) });
   };
 
   return (
@@ -257,6 +270,8 @@ export default function SessionManagerModal({ onClose }: SessionManagerModalProp
           )}
         </div>
       </div>
+      <ConfirmDialog open={Boolean(confirmRequest)} title={confirmRequest?.title || ''} message={confirmRequest?.message || ''} confirmLabel={confirmRequest?.confirmLabel} danger={confirmRequest?.danger} busy={busy} onCancel={() => setConfirmRequest(null)} onConfirm={() => { const request = confirmRequest; setConfirmRequest(null); if (request) void request.onConfirm(); }} />
+      <InputDialog open={Boolean(inputRequest)} title={inputRequest?.title || ''} message={inputRequest?.message} defaultValue={inputRequest?.defaultValue} busy={busy} onCancel={() => setInputRequest(null)} onConfirm={(value) => { const request = inputRequest; setInputRequest(null); if (request) void request.onConfirm(value); }} />
     </div>
   );
 }

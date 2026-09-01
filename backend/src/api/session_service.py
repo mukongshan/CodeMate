@@ -10,12 +10,16 @@ session 级的，不按 Lane 分。
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
+
+from fastapi import HTTPException
 
 from ..agent.loop import Agent
 from ..agent.prompts import MAIN_SYSTEM_PROMPT
@@ -118,6 +122,7 @@ class SessionRuntime:
         self._active_run_id: Optional[str] = None
         self._interrupt_requested = False
         self._checkpoint_flush_tasks: dict[str, asyncio.Task] = {}
+        self._pending_file_reviews: dict[str, dict] = {}
         self.state = AgentState.IDLE
 
         self.log.info(
@@ -150,6 +155,8 @@ class SessionRuntime:
         if event_lane is None:
             event_lane = self.lane_manager.current_lane
         payload.setdefault("lane", event_lane)
+        if event == "tool_call_end" and payload.get("status") == "success":
+            self._capture_file_review(payload, event_lane)
         if event.startswith("subagent_"):
             payload.setdefault("parent_lane", event_lane)
         if event == "run_started":
@@ -162,6 +169,124 @@ class SessionRuntime:
         if self._emit is None:
             return
         await self._emit(event, payload)
+
+    def _capture_file_review(self, payload: dict, lane: str) -> None:
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return
+        file_change = metadata.get("file_change")
+        if not isinstance(file_change, dict):
+            return
+        rollback = file_change.get("rollback")
+        if not isinstance(rollback, dict):
+            return
+        call_id = str(payload.get("call_id") or "")
+        path = str(file_change.get("path") or "")
+        before_base64 = rollback.get("before_base64")
+        after_revision = rollback.get("after_revision")
+        if not call_id or not path or not isinstance(before_base64, str) or not isinstance(after_revision, str):
+            return
+        try:
+            before = base64.b64decode(before_base64, validate=True)
+        except (ValueError, TypeError):
+            return
+        self._pending_file_reviews[call_id] = {
+            "review_id": call_id,
+            "lane": lane,
+            "path": path,
+            "before": before,
+            "before_exists": bool(rollback.get("before_exists", True)),
+            "after_revision": after_revision,
+        }
+        sanitized_metadata = dict(metadata)
+        sanitized_change = dict(file_change)
+        sanitized_change.pop("rollback", None)
+        sanitized_metadata["file_change"] = sanitized_change
+        payload["metadata"] = sanitized_metadata
+
+    def accept_file_review(self, review_id: str, lane: Optional[str] = None) -> dict:
+        self._ensure_no_active_run('确认文件修改')
+        review = self._pending_file_reviews.get(review_id)
+        if review is None or (lane is not None and review["lane"] != lane):
+            raise HTTPException(status_code=404, detail="文件审查记录不存在或不属于当前 Lane")
+        self._pending_file_reviews.pop(review_id, None)
+        return {"review_id": review_id, "accepted": True}
+
+    def accept_file_reviews(self, lane: Optional[str] = None) -> dict:
+        self._ensure_no_active_run('确认文件修改')
+        review_ids = [
+            review_id for review_id, review in self._pending_file_reviews.items()
+            if lane is None or review["lane"] == lane
+        ]
+        for review_id in review_ids:
+            self._pending_file_reviews.pop(review_id, None)
+        return {"review_ids": review_ids, "accepted": True}
+
+    def _file_review_workspace(self, review: dict) -> Path:
+        return self.workspace_for_lane(review["lane"])
+
+    def _validate_file_review_current(self, review: dict) -> None:
+        path = self._file_review_workspace(review) / Path(review["path"])
+        try:
+            current = path.resolve(strict=True)
+            current.relative_to(self._file_review_workspace(review).resolve())
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(status_code=409, detail="文件在审查期间已被删除或移出工作区")
+        if ".git" in current.relative_to(self._file_review_workspace(review).resolve()).parts:
+            raise HTTPException(status_code=403, detail="不允许回滚 Git 元数据")
+        try:
+            current_revision = hashlib.sha256(current.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"读取待回滚文件失败: {exc}") from exc
+        if current_revision != review["after_revision"]:
+            raise HTTPException(status_code=409, detail="文件在审查期间已被再次修改，未执行回滚")
+
+    def reject_file_review(self, review_id: str, lane: Optional[str] = None) -> dict:
+        from .workspace_files import restore_file
+
+        self._ensure_no_active_run('拒绝文件修改')
+        review = self._pending_file_reviews.get(review_id)
+        if review is None or (lane is not None and review["lane"] != lane):
+            raise HTTPException(status_code=404, detail="文件审查记录不存在或不属于当前 Lane")
+        self._validate_file_review_current(review)
+        result = restore_file(
+            self._file_review_workspace(review),
+            review["path"],
+            review["before"],
+            review["before_exists"],
+            review["after_revision"],
+        )
+        self._pending_file_reviews.pop(review_id, None)
+        self._cancel_checkpoint_flush(review["lane"])
+        return {"review_id": review_id, "rejected": True, "file": result}
+
+    def reject_file_reviews(self, lane: Optional[str] = None) -> dict:
+        from .workspace_files import restore_file
+
+        self._ensure_no_active_run('拒绝文件修改')
+        review_items = [
+            (review_id, review) for review_id, review in self._pending_file_reviews.items()
+            if lane is None or review["lane"] == lane
+        ]
+        latest_by_path: dict[tuple[str, str], dict] = {}
+        for _, review in review_items:
+            latest_by_path[(review["lane"], review["path"])] = review
+        for review in latest_by_path.values():
+            self._validate_file_review_current(review)
+        results = []
+        for review_id, review in reversed(review_items):
+            results.append(
+                restore_file(
+                    self._file_review_workspace(review),
+                    review["path"],
+                    review["before"],
+                    review["before_exists"],
+                    review["after_revision"],
+                )
+            )
+            self._pending_file_reviews.pop(review_id, None)
+            self._cancel_checkpoint_flush(review["lane"])
+        return {"review_ids": [review_id for review_id, _ in review_items], "rejected": True, "files": results}
 
     async def _ask_user(self, request: dict) -> dict:
         """把权限请求推给前端，挂起等待用户回复。
@@ -310,6 +435,9 @@ class SessionRuntime:
                 self.permission_manager.set_workspace(
                     self.workspace_for_lane(target_lane)
                 )
+            for review_id, review in list(self._pending_file_reviews.items()):
+                if review["lane"] == target_lane:
+                    self._pending_file_reviews.pop(review_id, None)
 
             self.log.info("run_started", lane=target_lane, user_message=user_message[:200])
             agent = self.build_agent(target_lane)
@@ -609,6 +737,29 @@ class SessionRuntime:
     def lane_status(self, lane: str) -> dict:
         self.lane_manager.get_lane(lane)
         return {"lane": lane, "git": self.git_manager.lane_api(lane)}
+
+    def git_status(self, lane: str) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.git_status(lane)
+
+    def git_diff(self, lane: str, path: str | None = None, staged: bool = False) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.git_diff(lane, path=path, staged=staged)
+
+    def git_stage(self, lane: str, paths: list[str]) -> dict:
+        self._ensure_no_active_run("暂存 Git 文件")
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.git_stage(lane, paths)
+
+    def git_unstage(self, lane: str, paths: list[str]) -> dict:
+        self._ensure_no_active_run("取消暂存 Git 文件")
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.git_unstage(lane, paths)
+
+    def git_commit(self, lane: str, message: str) -> dict:
+        self._ensure_no_active_run("提交 Git 修改")
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.git_commit(lane, message)
 
     def checkpoints(self, lane: str) -> list[dict]:
         self.lane_manager.get_lane(lane)
