@@ -290,6 +290,17 @@ class WriteFileTool(_WorkspaceTool):
         if existed and target.is_dir():
             return ToolResult.error(f"目标是一个目录，无法写入: {self._rel(target)}")
 
+        before_text: Optional[str] = ""
+        binary = False
+        if existed:
+            try:
+                before_raw = target.read_bytes()
+            except OSError as exc:
+                return ToolResult.error(f"读取原文件失败: {exc}")
+            binary = _looks_binary(before_raw)
+            if not binary:
+                before_text, _ = _decode(before_raw)
+
         if not target.parent.exists():
             if not create_dirs:
                 return ToolResult.error(
@@ -329,6 +340,9 @@ class WriteFileTool(_WorkspaceTool):
             path=self._rel(target),
             created=not existed,
             lines=line_count,
+            file_change=_file_change_metadata(
+                self._rel(target), before_text, content, binary=binary
+            ),
         )
 
 
@@ -412,6 +426,7 @@ class EditFileTool(_WorkspaceTool):
             f"已修改 {self._rel(target)}\n\n{diff}",
             path=self._rel(target),
             changes=changed,
+            file_change=_file_change_metadata(self._rel(target), text, updated),
         )
 
     def _no_match_result(self, target: Path, text: str, old: str) -> ToolResult:
@@ -495,3 +510,43 @@ def _make_diff(before: str, after: str, filename: str) -> str:
     if len(diff_lines) > 60:
         diff_lines = diff_lines[:60] + ["… diff 过长已截断 …"]
     return "\n".join(diff_lines)
+
+
+def _file_change_metadata(
+    filename: str,
+    before: Optional[str],
+    after: str,
+    *,
+    binary: bool = False,
+) -> dict:
+    if binary or before is None:
+        return {
+            "path": filename,
+            "binary": True,
+            "diff": "",
+            "added_lines": 0,
+            "removed_lines": 0,
+        }
+
+    raw_diff = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{filename}",
+            tofile=f"b/{filename}",
+            lineterm="",
+            n=2,
+        )
+    )
+    return {
+        "path": filename,
+        "binary": False,
+        "diff": _make_diff(before, after, filename),
+        "added_lines": sum(
+            1 for line in raw_diff if line.startswith("+") and not line.startswith("+++")
+        ),
+        "removed_lines": sum(
+            1 for line in raw_diff if line.startswith("-") and not line.startswith("---")
+        ),
+        "truncated": len(raw_diff) > 60,
+    }

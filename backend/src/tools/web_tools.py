@@ -27,7 +27,7 @@ MAX_FETCH_CHARS = 100_000
 MAX_SEARCH_BYTES = 1 * 1024 * 1024
 MAX_SEARCH_RESULTS = 8
 MAX_REDIRECTS = 5
-DEFAULT_SEARCH_ENDPOINT = "https://html.duckduckgo.com/html/"
+DEFAULT_SEARCH_ENDPOINT = "https://cn.bing.com/search"
 USER_AGENT = "CodeMate/1.0"
 
 
@@ -199,6 +199,63 @@ class _SearchParser(HTMLParser):
             self._field = None
 
 
+class _BingSearchParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[dict[str, str]] = []
+        self._current: dict[str, str] | None = None
+        self._field: str | None = None
+        self._in_heading = False
+        self._list_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        if tag == "li" and "b_algo" in classes:
+            self._current = {"title": "", "url": "", "snippet": ""}
+            self._list_depth = 1
+        elif self._current is not None and tag == "li":
+            self._list_depth += 1
+        elif self._current is not None and tag == "h2":
+            self._in_heading = True
+        elif self._current is not None and self._in_heading and tag == "a":
+            self._current["url"] = attributes.get("href", "")
+            self._field = "title"
+        elif self._current is not None and tag == "p":
+            self._field = "snippet"
+
+    def handle_data(self, data: str) -> None:
+        if self._current is not None and self._field:
+            self._current[self._field] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._field == "title":
+            self._field = None
+        elif tag == "h2":
+            self._in_heading = False
+        elif tag == "p" and self._field == "snippet":
+            self._field = None
+        elif tag == "li" and self._current is not None:
+            self._list_depth -= 1
+            if self._list_depth == 0:
+                if self._current.get("url"):
+                    self.results.append(self._current)
+                self._current = None
+                self._field = None
+                self._in_heading = False
+
+
+def _parse_search_results(source: str) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    for parser in (_BingSearchParser(), _SearchParser()):
+        try:
+            parser.feed(source)
+        except Exception:
+            continue
+        results.extend(parser.results)
+    return results
+
+
 class WebFetchTool(Tool):
     name = "web_fetch"
     description = "抓取公共 HTTP(S) 网页或文本资源，提取可读正文并限制输出大小。"
@@ -280,12 +337,9 @@ class WebSearchTool(Tool):
                     "确认网络可用，或设置 WEB_SEARCH_ENDPOINT 为可访问的搜索服务"
                 ],
             )
-        parser = _SearchParser()
-        try:
-            parser.feed(result["body"])
-        except Exception:
-            parser.results = []
-        results = [item for item in parser.results if item.get("url")][:limit]
+        results = [
+            item for item in _parse_search_results(result["body"]) if item.get("url")
+        ][:limit]
         if not results:
             return ToolResult.ok("没有找到搜索结果", query=query, total=0)
         lines = [f"搜索：{query.strip()}（{len(results)} 条）"]

@@ -95,7 +95,7 @@ class PermissionManager:
         )
         self.auto_approved: set[str] = set()
         self.denied: set[str] = set()
-        # 由 WebSocket 层注入。未注入时所有需要确认的操作一律拒绝。
+        # 由 WebSocket 层注入。未注入时需要确认的高风险操作一律拒绝。
         self.ask_user_callback: Optional[Callable[[dict], Awaitable[dict]]] = None
         self.audit_log: list[dict] = []
 

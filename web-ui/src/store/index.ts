@@ -5,6 +5,7 @@ import type {
   AgentState,
   Message,
   ToolCall,
+  FileReview,
   SubAgent,
   PermissionRequest,
   RuntimeErrorNotice,
@@ -14,6 +15,7 @@ import type {
 interface AppState {
   // Session 相关
   sessionId: string | null;
+  workspaceId: string | null;
   workspace: string;
   commandBlacklist: string[];
   currentLane: string;
@@ -28,7 +30,11 @@ interface AppState {
   // 对话数据
   messages: Message[];
   toolCalls: Map<string, ToolCall>;
+  fileReviews: Map<string, FileReview>;
   subagents: Map<string, SubAgent>;
+  /** 当前 LLM 轮次的消息 id，工具调用挂到它名下 */
+  pendingAssistantId: string | null;
+  pendingAssistantLane?: string;
 
   // WebSocket 连接
   wsConnected: boolean;
@@ -58,10 +64,17 @@ interface AppState {
 
   addMessage: (message: Message) => void;
   updateMessage: (messageId: string, update: Partial<Message>) => void;
-  appendMessageText: (messageId: string, text: string) => void;
-  finishStreamingMessages: (removeEmpty?: boolean) => void;
+  appendMessageText: (messageId: string, text: string, lane?: string) => void;
+  finishStreamingMessages: (removeEmptyInterrupted?: boolean) => void;
 
+  resolveLocalUserMessage: (realId: string) => void;
+
+  beginAssistantMessage: (messageId: string, lane?: string) => void;
+  attachToolCall: (call: ToolCall) => void;
   updateToolCall: (callId: string, update: Partial<ToolCall>) => void;
+  addFileReview: (review: FileReview) => void;
+  acceptFileReview: (reviewId: string) => void;
+  clearFileReviews: () => void;
   updateSubagent: (subagentId: string, update: Partial<SubAgent>) => void;
   clearSubagents: () => void;
 
@@ -84,6 +97,7 @@ interface AppState {
 export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
+  workspaceId: null,
   workspace: '',
   commandBlacklist: [],
   currentLane: 'main',
@@ -96,7 +110,10 @@ export const useStore = create<AppState>((set) => ({
 
   messages: [],
   toolCalls: new Map(),
+  fileReviews: new Map(),
   subagents: new Map(),
+  pendingAssistantId: null,
+  pendingAssistantLane: undefined,
 
   wsConnected: false,
   wsReconnecting: false,
@@ -119,6 +136,7 @@ export const useStore = create<AppState>((set) => ({
       const resetTransient = !sameSession || laneChanged;
       return {
         sessionId,
+        workspaceId: data.workspace_id ?? state.workspaceId,
         workspace: data.workspace || '',
         commandBlacklist: data.command_blacklist || [],
         currentLane: nextLane,
@@ -128,6 +146,7 @@ export const useStore = create<AppState>((set) => ({
         entries: data.entries || [],
         messages: resetTransient ? [] : state.messages,
         toolCalls: resetTransient ? new Map() : state.toolCalls,
+        fileReviews: !sameSession ? new Map() : state.fileReviews,
         subagents: resetTransient ? new Map() : state.subagents,
         selectedNodeId: null,
         permissionRequest: resetTransient ? null : state.permissionRequest,
@@ -138,6 +157,7 @@ export const useStore = create<AppState>((set) => ({
   clearSession: () =>
     set({
       sessionId: null,
+      workspaceId: null,
       workspace: '',
       commandBlacklist: [],
       currentLane: 'main',
@@ -148,7 +168,10 @@ export const useStore = create<AppState>((set) => ({
       highlightedPaths: new Set(),
       messages: [],
       toolCalls: new Map(),
+      fileReviews: new Map(),
       subagents: new Map(),
+      pendingAssistantId: null,
+      pendingAssistantLane: undefined,
       selectedNodeId: null,
       showNodeDetail: false,
       showCompareDrawer: false,
@@ -169,6 +192,8 @@ export const useStore = create<AppState>((set) => ({
             messages: [],
             toolCalls: new Map(),
             subagents: new Map(),
+            pendingAssistantId: null,
+            pendingAssistantLane: undefined,
             permissionRequest: null,
             runtimeError: null,
           }
@@ -191,30 +216,116 @@ export const useStore = create<AppState>((set) => ({
       messages: [...state.messages, message],
     })),
 
+  resolveLocalUserMessage: (realId) =>
+    set((state) => {
+      const index = state.messages.findLastIndex(
+        (message) => message.role === 'user' && message.message_id.startsWith('local-user-')
+      );
+      if (index === -1) return {};
+      const messages = [...state.messages];
+      messages[index] = { ...messages[index], message_id: realId };
+      return { messages };
+    }),
+
   updateMessage: (messageId, update) =>
-    set((state) => ({
-      messages: state.messages.map((msg) =>
-        msg.message_id === messageId ? { ...msg, ...update } : msg
-      ),
-    })),
+    set((state) => {
+      const nextMessageId = update.message_id;
+      return {
+        messages: state.messages.map((msg) =>
+          msg.message_id === messageId ? { ...msg, ...update } : msg
+        ),
+        pendingAssistantId:
+          nextMessageId && state.pendingAssistantId === messageId
+            ? nextMessageId
+            : state.pendingAssistantId,
+      };
+    }),
 
-  appendMessageText: (messageId, text) =>
-    set((state) => ({
-      messages: state.messages.map((msg) =>
-        msg.message_id === messageId
-          ? { ...msg, content: msg.content + text }
-          : msg
-      ),
-    })),
+  appendMessageText: (messageId, text, lane) =>
+    set((state) => {
+      const exists = state.messages.some((msg) => msg.message_id === messageId);
+      if (!exists) {
+        // 气泡在收到首个 delta 时才创建，纯工具调用轮次不会留下空气泡
+        return {
+          messages: [
+            ...state.messages,
+            {
+              message_id: messageId,
+              role: 'assistant' as const,
+              content: text,
+              timestamp: Date.now(),
+              is_streaming: true,
+              lane,
+            },
+          ],
+        };
+      }
+      return {
+        messages: state.messages.map((msg) =>
+          msg.message_id === messageId
+            ? { ...msg, content: msg.content + text, is_streaming: true }
+            : msg
+        ),
+      };
+    }),
 
-  finishStreamingMessages: (removeEmpty = false) =>
+  finishStreamingMessages: (removeEmptyInterrupted = false) =>
     set((state) => ({
-      messages: state.messages
-        .filter((message) => !(removeEmpty && message.is_streaming && !message.content.trim()))
-        .map((message) =>
+      // 只有工具调用、没有正文的轮次不该留下一个空气泡
+      messages: (removeEmptyInterrupted
+        ? state.messages.filter(
+          (message) =>
+            message.content.trim().length > 0 ||
+            (message.tool_calls?.length ?? 0) > 0 ||
+            message.role === 'user'
+        )
+        : state.messages
+      ).map((message) =>
           message.is_streaming ? { ...message, is_streaming: false } : message
         ),
     })),
+
+  beginAssistantMessage: (messageId, lane) =>
+    set({ pendingAssistantId: messageId, pendingAssistantLane: lane }),
+
+  attachToolCall: (call) =>
+    set((state) => {
+      const toolCalls = new Map(state.toolCalls);
+      toolCalls.set(call.call_id, { ...toolCalls.get(call.call_id), ...call });
+
+      const targetId = state.pendingAssistantId;
+      if (!targetId) return { toolCalls };
+
+      const index = state.messages.findIndex((message) => message.message_id === targetId);
+      if (index === -1) {
+        // 本轮还没有正文，只有工具调用：建一条无正文的载体，不渲染气泡
+        return {
+          toolCalls,
+          messages: [
+            ...state.messages,
+            {
+              message_id: targetId,
+              role: 'assistant' as const,
+              content: '',
+              timestamp: Date.now(),
+              lane: state.pendingAssistantLane,
+              tool_calls: [call],
+            },
+          ],
+        };
+      }
+
+      const target = state.messages[index];
+      if (target.tool_calls?.some((item) => item.call_id === call.call_id)) {
+        return { toolCalls };
+      }
+      const messages = [...state.messages];
+      messages[index] = {
+        ...target,
+        tool_calls: [...(target.tool_calls ?? []), call],
+      };
+      return { toolCalls, messages };
+    }),
 
   updateToolCall: (callId, update) =>
     set((state) => {
@@ -227,6 +338,22 @@ export const useStore = create<AppState>((set) => ({
       }
       return { toolCalls: newToolCalls };
     }),
+
+  addFileReview: (review) =>
+    set((state) => {
+      const fileReviews = new Map(state.fileReviews);
+      fileReviews.set(review.review_id, review);
+      return { fileReviews };
+    }),
+
+  acceptFileReview: (reviewId) =>
+    set((state) => {
+      const fileReviews = new Map(state.fileReviews);
+      fileReviews.delete(reviewId);
+      return { fileReviews };
+    }),
+
+  clearFileReviews: () => set({ fileReviews: new Map() }),
 
   updateSubagent: (subagentId, update) =>
     set((state) => {

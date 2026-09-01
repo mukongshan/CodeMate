@@ -6,7 +6,12 @@ import pytest
 
 from src.tools.file_tools import ListDirectoryTool
 from src.tools.registry import ToolRegistry
-from src.tools.web_tools import WebFetchTool, WebSearchTool, _html_to_text
+from src.tools.web_tools import (
+    WebFetchTool,
+    WebSearchTool,
+    _html_to_text,
+    _parse_search_results,
+)
 
 
 def _response(body: str, content_type: str = "text/html; charset=utf-8") -> MagicMock:
@@ -54,6 +59,22 @@ class TestWebTools:
         assert "One" in result.content
         assert "https://example.com/a" in result.content
         assert result.metadata["total"] == 1
+
+    def test_parses_bing_search_results(self):
+        results = _parse_search_results(
+            '<ol id="b_results"><li class="b_algo">'
+            '<h2><a href="https://example.com/a">One</a></h2>'
+            '<div class="b_caption"><p>First result</p></div>'
+            '</li></ol>'
+        )
+
+        assert results == [
+            {
+                "title": "One",
+                "url": "https://example.com/a",
+                "snippet": "First result",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_fetch_rejects_non_public_url(self):

@@ -99,6 +99,21 @@ class LaneDeletedData(BaseModel):
 class CreateSessionIn(BaseModel):
     session_id: Optional[str] = None
     workspace: Optional[str] = None
+    workspace_id: Optional[str] = None
+    title: Optional[str] = None
+
+
+class CreateWorkspaceIn(BaseModel):
+    path: str
+    title: Optional[str] = None
+
+
+class RenameIn(BaseModel):
+    title: str
+
+
+class RenameLaneIn(BaseModel):
+    name: str
 
 
 class CreateLaneIn(BaseModel):

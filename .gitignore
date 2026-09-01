@@ -59,6 +59,8 @@ web-ui/logs/
 
 # Runtime data
 backend/data/sessions/
+backend/data/workspaces/
+backend/data/deletions/
 data/sessions/
 *.jsonl
 pids

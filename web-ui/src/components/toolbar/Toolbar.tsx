@@ -9,13 +9,16 @@ import {
   ShieldCheck,
   Code2,
   FolderOpen,
+  Settings,
   Wifi,
   WifiOff,
+  MessageSquare,
 } from 'lucide-react';
 import AgentStatusBadge from './AgentStatusBadge';
 import CreateLaneModal from '../modals/CreateLaneModal';
 import PermissionGateModal from '../modals/PermissionGateModal';
 import LaneCodeManagerModal from '../modals/LaneCodeManagerModal';
+import SessionManagerModal from '../modals/SessionManagerModal';
 
 export default function Toolbar() {
   const {
@@ -32,9 +35,11 @@ export default function Toolbar() {
     setShowWorkspaceFiles,
   } = useStore();
   const [showLaneDropdown, setShowLaneDropdown] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [showCreateLane, setShowCreateLane] = useState(false);
   const [showPermissionGate, setShowPermissionGate] = useState(false);
   const [showCodeManager, setShowCodeManager] = useState(false);
+  const [showSessionManager, setShowSessionManager] = useState(false);
 
   const laneColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100'];
 
@@ -68,27 +73,29 @@ export default function Toolbar() {
       ? '重连中'
       : '未连接';
   const connectionIcon = wsConnected ? (
-    <Wifi className="h-4 w-4" />
+    <Wifi className="h-3.5 w-3.5" />
   ) : wsReconnecting ? (
-    <RefreshCw className="h-4 w-4 animate-spin" />
+    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
   ) : (
-    <WifiOff className="h-4 w-4" />
+    <WifiOff className="h-3.5 w-3.5" />
   );
 
   return (
-    <div className="h-[52px] border-b border-border bg-surface-2 flex items-center justify-between px-4">
+    <div className="flex h-[52px] items-center justify-between gap-3 border-b border-border bg-surface-2 px-4">
       {/* 左侧 */}
-      <div className="flex items-center gap-4">
-        <div className="text-lg font-semibold">◈ CodeMate</div>
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex-none pr-1 text-base font-semibold tracking-tight">◈ CodeMate</div>
+
+        <div className="mx-1 hidden h-5 w-px flex-none bg-border sm:block" />
 
         {/* Lane 选择器 */}
-        <div className="relative">
+        <div className="relative flex-none">
           <button
             onClick={() => setShowLaneDropdown(!showLaneDropdown)}
-            className="flex items-center gap-2 px-3 py-1.5 bg-surface-1 border border-border rounded-md hover:bg-surface-3 transition-colors"
+            className="flex items-center gap-2 rounded-lg border border-border bg-surface-1 px-2.5 py-1.5 transition-colors hover:bg-surface-3"
           >
             <div
-              className="w-2 h-2 rounded-full"
+              className="h-2 w-2 rounded-full"
               style={{ backgroundColor: laneColors[activeLaneIndex % 4] }}
             />
             <span className="text-sm font-medium">{currentLane}</span>
@@ -104,100 +111,83 @@ export default function Toolbar() {
                 {activeLane.git.short_head || activeLane.git.sync_state}
               </span>
             )}
-            <ChevronDown className="w-4 h-4 text-text-muted" />
+            <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
           </button>
 
           {showLaneDropdown && (
-            <div className="absolute top-full mt-1 left-0 w-56 bg-surface-2 border border-border rounded-lg shadow-pop z-50">
-              {lanes.map((lane, index) => (
-                <button
-                  key={lane.lane}
-                  onClick={() => switchLane(lane.lane)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-3 transition-colors first:rounded-t-lg"
-                >
-                  <div
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: laneColors[index % 4] }}
-                  />
-                  <span className="text-sm flex-1 text-left">{lane.lane}</span>
-                  {lane.lane === currentLane && (
-                    <span className="text-xs text-status-success">✓</span>
-                  )}
-                </button>
-              ))}
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowLaneDropdown(false)} />
+              <div className="absolute left-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-xl border border-border bg-surface-2 py-1 shadow-pop">
+                <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-text-muted">
+                  分支
+                </div>
+                {lanes.map((lane, index) => (
+                  <button
+                    key={lane.lane}
+                    onClick={() => switchLane(lane.lane)}
+                    className="flex w-full items-center gap-2 px-3 py-2 transition-colors hover:bg-surface-3"
+                  >
+                    <div
+                      className="h-2 w-2 flex-none rounded-full"
+                      style={{ backgroundColor: laneColors[index % 4] }}
+                    />
+                    <span className="flex-1 truncate text-left text-sm">{lane.lane}</span>
+                    {lane.lane === currentLane && (
+                      <span className="text-xs text-status-success">✓</span>
+                    )}
+                  </button>
+                ))}
 
-              <div className="border-t border-border">
-                <button
-                  onClick={() => {
-                    setShowLaneDropdown(false);
-                    setShowCreateLane(true);
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-surface-3 transition-colors text-accent rounded-b-lg"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span className="text-sm">新建分支</span>
-                </button>
+                <div className="mt-1 border-t border-border pt-1">
+                  <button
+                    onClick={() => {
+                      setShowLaneDropdown(false);
+                      setShowCreateLane(true);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-accent transition-colors hover:bg-surface-3"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span className="text-sm">新建分支</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            </>
           )}
         </div>
 
-        {/* 创建分支 */}
-        <button
-          onClick={() => setShowCreateLane(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-surface-3 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          分支
-        </button>
-
-        {/* 对比分支 */}
-        <button
-          onClick={() => setShowCompareDrawer(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-surface-3 transition-colors"
-        >
-          <GitCompare className="w-4 h-4" />
-          对比
-        </button>
-
-        <button
-          onClick={() => setShowPermissionGate(true)}
-          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-surface-3"
-          title="维护命令工具门禁"
-        >
-          <ShieldCheck className="h-4 w-4" />
-          门禁
-        </button>
-
-        <button
-          onClick={() => setShowCodeManager(true)}
-          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-surface-3"
-          title="管理代码检查点、发布和 Lane 生命周期"
-        >
-          <Code2 className="h-4 w-4" />
-          代码管理
-        </button>
-
+        {/* 常用操作 */}
         <button
           onClick={() => setShowWorkspaceFiles(true)}
-          className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-surface-3"
+          className="flex flex-none items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
           title="浏览当前 Lane 工作区文件"
         >
           <FolderOpen className="h-4 w-4" />
-          文件
+          <span className="hidden lg:inline">文件</span>
         </button>
-      </div>
 
-      {/* 右侧 */}
-      <div className="flex items-center gap-4">
+        <button
+          onClick={() => setShowCompareDrawer(true)}
+          className="flex flex-none items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+          title="对比分支代码差异"
+        >
+          <GitCompare className="h-4 w-4" />
+          <span className="hidden lg:inline">对比</span>
+        </button>
+
         {workspace && (
-          <div className="hidden xl:block max-w-[360px] truncate text-xs font-mono text-text-muted">
+          <div
+            className="ml-1 hidden min-w-0 truncate font-mono text-xs text-text-muted xl:block"
+            title={workspace}
+          >
             {workspace}
           </div>
         )}
+      </div>
 
+      {/* 右侧 */}
+      <div className="flex flex-none items-center gap-2">
         <div
-          className={`hidden items-center gap-1.5 rounded-md border border-border bg-surface-1 px-2.5 py-1.5 text-xs md:flex ${
+          className={`hidden items-center gap-1.5 rounded-lg border border-border bg-surface-1 px-2 py-1.5 text-xs md:flex ${
             wsConnected ? 'text-status-success' : 'text-status-warning'
           }`}
           title="后端连接状态"
@@ -208,13 +198,91 @@ export default function Toolbar() {
 
         <AgentStatusBadge state={agentState} />
 
-        <button
-          onClick={clearSession}
-          className="p-1.5 hover:bg-surface-3 rounded-md transition-colors"
-          title="退出工作区"
-        >
-          <LogOut className="w-5 h-5 text-text-muted" />
-        </button>
+        {/* 设置菜单 */}
+        <div className="relative">
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-surface-3 hover:text-text-primary"
+            title="设置"
+            aria-label="设置"
+            aria-expanded={showSettings}
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+
+          {showSettings && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
+              <div className="absolute right-0 top-full z-50 mt-1.5 w-56 overflow-hidden rounded-xl border border-border bg-surface-2 py-1 shadow-pop">
+                <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-text-muted">
+                  工作区设置
+                </div>
+                <button
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowCodeManager(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-surface-3"
+                >
+                  <Code2 className="h-4 w-4 text-text-muted" />
+                  代码管理
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowPermissionGate(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-surface-3"
+                >
+                  <ShieldCheck className="h-4 w-4 text-text-muted" />
+                  命令门禁
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowCreateLane(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-surface-3"
+                >
+                  <Plus className="h-4 w-4 text-text-muted" />
+                  新建分支
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowSessionManager(true);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-surface-3"
+                >
+                  <MessageSquare className="h-4 w-4 text-text-muted" />
+                  会话管理
+                </button>
+
+                {workspace && (
+                  <div className="border-t border-border px-3 py-2">
+                    <div className="text-[11px] text-text-muted">当前工作区</div>
+                    <div className="truncate font-mono text-xs text-text-secondary" title={workspace}>
+                      {workspace}
+                    </div>
+                  </div>
+                )}
+
+                <div className="border-t border-border pt-1">
+                  <button
+                    onClick={() => {
+                      setShowSettings(false);
+                      clearSession();
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-status-error transition-colors hover:bg-red-50"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    退出工作区
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* 创建分支对话框 */}
@@ -224,6 +292,9 @@ export default function Toolbar() {
       )}
       {showCodeManager && (
         <LaneCodeManagerModal onClose={() => setShowCodeManager(false)} />
+      )}
+      {showSessionManager && (
+        <SessionManagerModal onClose={() => setShowSessionManager(false)} />
       )}
     </div>
   );

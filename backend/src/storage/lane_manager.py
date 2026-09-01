@@ -221,6 +221,7 @@ class LaneManager:
             lane=name,
             leaf_id=leaf_id,
             seq=prev.seq + 1,
+            lane_id=prev.lane_id,
             created_from=prev.created_from,
             description=prev.description,
             archived=prev.archived,
@@ -272,6 +273,7 @@ class LaneManager:
             lane=pointer.lane,
             leaf_id=pointer.leaf_id,
             seq=pointer.seq + 1,
+            lane_id=pointer.lane_id,
             created_from=pointer.created_from,
             description=pointer.description,
             archived=True,
@@ -287,12 +289,37 @@ class LaneManager:
             lane=pointer.lane,
             leaf_id=pointer.leaf_id,
             seq=pointer.seq + 1,
+            lane_id=pointer.lane_id,
             created_from=pointer.created_from,
             description=pointer.description,
             archived=False,
         )
         self._append(restored)
         return restored
+
+    def rename_lane(self, name: str, new_name: str) -> LanePointer:
+        if name == MAIN_LANE:
+            raise AgentError(
+                message="main 分支不能重命名", code=CODE_LANE_PROTECTED
+            )
+        pointer = self.get_lane(name)
+        self.validate_new_lane(new_name)
+        renamed = LanePointer(
+            lane=new_name,
+            leaf_id=pointer.leaf_id,
+            seq=pointer.seq + 1,
+            lane_id=pointer.lane_id,
+            created_from=pointer.created_from,
+            description=pointer.description,
+            archived=pointer.archived,
+        )
+        del self._lanes[name]
+        self._append_raw({"lane": name, "deleted": True, "renamed_to": new_name})
+        self._append(renamed)
+        if self._current_lane == name:
+            self._current_lane = new_name
+            self._append_raw({"current_lane": new_name})
+        return renamed
 
     def delete_lane(self, name: str, current_lane: Optional[str] = None) -> None:
         """删除分支指针，不删树中的节点（03 号文档 3.4 节）。"""

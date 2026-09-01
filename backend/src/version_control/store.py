@@ -60,6 +60,37 @@ class LaneGitStore:
         )
         temporary.replace(self.binding_path)
 
+    def rename_binding(self, lane: str, new_lane: str) -> None:
+        binding = self.bindings.pop(lane, None)
+        if binding is None:
+            return
+        binding.lane = new_lane
+        self.bindings[new_lane] = binding
+        payload = {
+            "bindings": [item.to_dict() for item in self.bindings.values()]
+        }
+        temporary = self.binding_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(self.binding_path)
+        if self.checkpoint_path.exists():
+            rewritten: list[str] = []
+            for line in self.checkpoint_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    rewritten.append(line)
+                    continue
+                if record.get("lane") == lane:
+                    record["lane"] = new_lane
+                rewritten.append(json.dumps(record, ensure_ascii=False))
+            checkpoint_tmp = self.checkpoint_path.with_suffix(".tmp")
+            checkpoint_tmp.write_text(
+                "\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8"
+            )
+            checkpoint_tmp.replace(self.checkpoint_path)
+
     def append_checkpoint(self, checkpoint: CodeCheckpoint) -> None:
         with self.checkpoint_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(checkpoint.to_dict(), ensure_ascii=False) + "\n")

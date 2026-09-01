@@ -109,7 +109,23 @@ describe('useWebSocket', () => {
       ws.emit({ type: 'node_added', data: { id: 'entry-m1', message_id: 'm1', role: 'assistant' } });
       ws.emit({ type: 'message_end', data: { message_id: 'm1', stop_reason: 'stop' } });
       ws.emit({ type: 'tool_call_start', data: { call_id: 'c1', tool_name: 'read_file', args: { path: 'a.txt' } } });
-      ws.emit({ type: 'tool_call_end', data: { call_id: 'c1', status: 'success', result: 'ok' } });
+      ws.emit({
+        type: 'tool_call_end',
+        data: {
+          call_id: 'c1',
+          status: 'success',
+          result: 'ok',
+          metadata: {
+            file_change: {
+              path: 'src/app.ts',
+              binary: false,
+              diff: '+new line',
+              added_lines: 1,
+              removed_lines: 0,
+            },
+          },
+        },
+      });
       ws.emit({ type: 'subagent_started', data: { subagent_id: 'sub-1', task: 'inspect', max_steps: 8, status: 'pending' } });
       ws.emit({ type: 'subagent_progress', data: { subagent_id: 'sub-1', step: 2, max_steps: 8, status: 'running', tool_name: 'grep', message: '正在调用 grep' } });
       ws.emit({ type: 'subagent_done', data: { subagent_id: 'sub-1', status: 'completed', content: 'done', details: { tool_calls: 2 } } });
@@ -125,6 +141,11 @@ describe('useWebSocket', () => {
     expect(useStore.getState().messages[0].message_id).toBe('entry-m1');
     expect(useStore.getState().messages[0].content).toBe('Hello');
     expect(useStore.getState().toolCalls.get('c1')?.status).toBe('success');
+    expect(useStore.getState().fileReviews.get('c1')).toMatchObject({
+      review_id: 'c1',
+      tool_name: 'read_file',
+      file_change: { path: 'src/app.ts' },
+    });
     expect(useStore.getState().subagents.get('sub-1')).toMatchObject({
       status: 'completed',
       step: 2,
@@ -135,6 +156,11 @@ describe('useWebSocket', () => {
     expect(useStore.getState().agentState).toBe('executing_tool');
     expect(useStore.getState().runtimeError?.message).toBe('boom');
     expect(useStore.getState().toasts.at(-1)?.message).toBe('boom');
+
+    act(() => {
+      result.current.sendMessage('next conversation', 'main');
+    });
+    expect(useStore.getState().fileReviews.size).toBe(0);
 
     act(() => {
       ws.emit({ type: 'run_started', data: { run_id: 'r2', lane: 'main' } });

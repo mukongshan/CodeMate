@@ -57,6 +57,9 @@ class TestFileTools:
         assert not result.is_error
         assert target.exists()
         assert target.read_text(encoding="utf-8") == "Test content"
+        assert result.metadata["file_change"]["path"] == "output.txt"
+        assert result.metadata["file_change"]["added_lines"] == 1
+        assert result.metadata["file_change"]["removed_lines"] == 0
 
     @pytest.mark.asyncio
     async def test_write_file_creates_directory(self, temp_dir):
@@ -84,6 +87,10 @@ class TestFileTools:
         content = sample_file.read_text(encoding="utf-8")
         assert "Hello Python" in content
         assert "Hello World" not in content
+        assert result.metadata["file_change"]["added_lines"] == 1
+        assert result.metadata["file_change"]["removed_lines"] == 1
+        assert "-Hello World" in result.metadata["file_change"]["diff"]
+        assert "+Hello Python" in result.metadata["file_change"]["diff"]
 
     @pytest.mark.asyncio
     async def test_edit_file_not_found(self, temp_dir, sample_file):

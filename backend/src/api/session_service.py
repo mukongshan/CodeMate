@@ -10,8 +10,8 @@ session 级的，不按 Lane 分。
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -527,6 +527,20 @@ class SessionRuntime:
             self._cancel_checkpoint_flush(lane)
         self.lane_manager.delete_lane(lane)
 
+    def rename_lane(self, lane: str, new_lane: str) -> dict:
+        self._ensure_no_active_run("重命名 Lane")
+        self.lane_manager.get_lane(lane)
+        self.lane_manager.validate_new_lane(new_lane)
+        self.git_manager.rename_lane(lane, new_lane)
+        try:
+            pointer = self.lane_manager.rename_lane(lane, new_lane)
+        except Exception:
+            self.git_manager.rename_lane(new_lane, lane)
+            raise
+        self._cancel_checkpoint_flush(lane)
+        self.permission_manager.set_workspace(self.workspace_for_lane(new_lane))
+        return self.lane_payload(pointer.lane)
+
     def checkpoint_lane(
         self,
         lane: str,
@@ -655,9 +669,13 @@ class SessionManager:
         self.config = config
         self._sessions: dict[str, SessionRuntime] = {}
         self.workspace_storage = WorkspaceStorage(config.data_dir)
-        migrated = self.workspace_storage.migrate_legacy_sessions(config.workspace)
-        if migrated:
-            logger.info("已迁移 %d 个旧扁平 Session", migrated)
+        self._recover_deletion_journals()
+
+    def legacy_migration_plan(self) -> list[dict]:
+        return self.workspace_storage.legacy_migration_plan(self.config.workspace)
+
+    def migrate_legacy_sessions(self) -> int:
+        return self.workspace_storage.migrate_legacy_sessions(self.config.workspace)
 
     def create(
         self,
@@ -681,6 +699,7 @@ class SessionManager:
             "session_id": sid,
             "workspace_id": workspace_record.workspace_id,
             "workspace": workspace_record.path,
+            "workspace_title": workspace_record.title,
             "title": (title or sid).strip() or sid,
             "created_at": now,
             "updated_at": now,
@@ -754,6 +773,7 @@ class SessionManager:
             },
         )
         runtime = self.get_or_load(session_id)
+        git_cleaned = False
         try:
             if runtime is not None:
                 runtime.cancel_checkpoint_flushes()
@@ -770,8 +790,9 @@ class SessionManager:
                     "updated_at": time.time(),
                 },
             )
-            self.workspace_storage.delete_session_directory(paths)
+            git_cleaned = True
             self.workspace_storage.detach_session(paths.workspace_id, session_id)
+            self.workspace_storage.delete_session_directory(paths)
             journal.unlink(missing_ok=True)
         except Exception as exc:
             self.workspace_storage.write_deletion_journal(
@@ -782,6 +803,7 @@ class SessionManager:
                     "session_id": session_id,
                     "workspace_id": paths.workspace_id,
                     "state": "failed",
+                    "recoverable_from": "git_cleaned" if git_cleaned else None,
                     "error": str(exc),
                     "updated_at": time.time(),
                 },
@@ -839,6 +861,28 @@ class SessionManager:
         )
         return record
 
+    def _recover_deletion_journals(self) -> None:
+        for journal, payload in self.workspace_storage.list_deletion_journals():
+            if payload.get("operation") != "delete_session":
+                continue
+            recoverable = payload.get("state") == "git_cleaned" or (
+                payload.get("state") == "failed"
+                and payload.get("recoverable_from") == "git_cleaned"
+            )
+            if not recoverable:
+                logger.warning("存在待人工重试的删除操作: %s", journal)
+                continue
+            workspace_id = str(payload.get("workspace_id") or "")
+            session_id = str(payload.get("session_id") or "")
+            if not workspace_id or not session_id:
+                continue
+            paths = self.workspace_storage.session_paths(workspace_id, session_id)
+            workspace_record = self.workspace_storage.get_workspace(workspace_id)
+            if workspace_record is not None:
+                self.workspace_storage.detach_session(workspace_id, session_id)
+            self.workspace_storage.delete_session_directory(paths)
+            journal.unlink(missing_ok=True)
+
     def _build_runtime(
         self, paths: SessionPaths, meta: dict, workspace: WorkspaceRecord
     ) -> SessionRuntime:
@@ -882,13 +926,6 @@ class SessionManager:
             "loaded": paths.session_id in self._sessions,
             "workspace": workspace.path,
         }
-            runtime.cancel_checkpoint_flushes()
-            runtime.git_manager.close_worktrees()
-            runtime.storage.delete_files()
-            runtime.lane_manager.delete_files()
-            runtime.git_manager.delete_files()
-            self._sessions.pop(session_id, None)
-        self._meta_path(session_id).unlink(missing_ok=True)
 
     def update_command_blacklist(
         self, session_id: str, commands: list[str]

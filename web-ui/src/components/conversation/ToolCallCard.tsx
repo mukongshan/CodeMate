@@ -1,9 +1,37 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronUp, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import {
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  FilePen,
+  FileText,
+  Loader2,
+  Search,
+  Terminal,
+  Wrench,
+  XCircle,
+} from 'lucide-react';
 import type { ToolCall } from '../../types';
 
 interface ToolCallCardProps {
   toolCall?: ToolCall;
+}
+
+function getToolIcon(toolName: string) {
+  switch (toolName) {
+    case 'bash':
+      return <Terminal className="h-3.5 w-3.5" />;
+    case 'read_file':
+      return <FileText className="h-3.5 w-3.5" />;
+    case 'write_file':
+    case 'edit_file':
+      return <FilePen className="h-3.5 w-3.5" />;
+    case 'glob':
+    case 'grep':
+      return <Search className="h-3.5 w-3.5" />;
+    default:
+      return <Wrench className="h-3.5 w-3.5" />;
+  }
 }
 
 export default function ToolCallCard({ toolCall }: ToolCallCardProps) {
@@ -14,27 +42,25 @@ export default function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const getStatusIcon = () => {
     switch (toolCall.status) {
       case 'pending':
-        return <Loader2 className="w-4 h-4 animate-spin text-status-pending" />;
+        return <Loader2 className="h-3.5 w-3.5 animate-spin text-status-pending" />;
       case 'success':
-        return <CheckCircle className="w-4 h-4 text-status-success" />;
+        return <CheckCircle className="h-3.5 w-3.5 text-status-success" />;
       case 'error':
-        return <XCircle className="w-4 h-4 text-status-error" />;
+        return <XCircle className="h-3.5 w-3.5 text-status-error" />;
     }
   };
 
   const getKeyArg = () => {
-    // 根据工具类型提取关键参数
     switch (toolCall.tool_name) {
       case 'read_file':
       case 'write_file':
       case 'edit_file':
-        return toolCall.args.path;
+        return toolCall.args?.path;
       case 'bash':
-        return toolCall.args.command?.substring(0, 50) + (toolCall.args.command?.length > 50 ? '...' : '');
+        return toolCall.args?.command;
       case 'glob':
-        return toolCall.args.pattern;
       case 'grep':
-        return toolCall.args.pattern;
+        return toolCall.args?.pattern;
       default:
         return null;
     }
@@ -42,65 +68,36 @@ export default function ToolCallCard({ toolCall }: ToolCallCardProps) {
 
   const keyArg = getKeyArg();
 
-  // error 卡片自动展开
-  const shouldExpand = expanded || toolCall.status === 'error';
-
   return (
-    <div className="border border-border rounded-md bg-surface-2 overflow-hidden">
-      {/* 头部 */}
-      <div className="flex items-center justify-between p-3">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          {getStatusIcon()}
-          <span className="text-sm font-mono font-medium">{toolCall.tool_name}</span>
-          {toolCall.status === 'success' && (
-            <span className="text-xs text-status-success">成功</span>
-          )}
-          {toolCall.status === 'error' && (
-            <span className="text-xs text-status-error">失败</span>
-          )}
-        </div>
+    <div className={'overflow-hidden rounded-xl border bg-surface-1 transition-colors ' + (toolCall.status === 'error' ? 'border-status-error/40' : 'border-border')}>
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-surface-2"
+        aria-expanded={expanded}
+      >
+        <span className="flex-none">{getStatusIcon()}</span>
+        <span className="flex flex-none items-center gap-1.5 rounded-md bg-surface-3 px-1.5 py-0.5 text-text-secondary">
+          {getToolIcon(toolCall.tool_name)}
+          <span className="font-mono text-[11px] font-medium">{toolCall.tool_name}</span>
+        </span>
+        {keyArg && <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted" title={String(keyArg)}>{String(keyArg)}</span>}
+        {!keyArg && <span className="flex-1" />}
+        <span className="flex-none text-text-muted">{expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}</span>
+      </button>
 
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="p-1 hover:bg-surface-3 rounded transition-colors"
-        >
-          {shouldExpand ? (
-            <ChevronUp className="w-4 h-4 text-text-muted" />
-          ) : (
-            <ChevronDown className="w-4 h-4 text-text-muted" />
-          )}
-        </button>
-      </div>
-
-      {/* 关键参数摘要 */}
-      {keyArg && (
-        <div className="px-3 pb-2">
-          <div className="text-sm text-text-secondary font-mono truncate">
-            {keyArg}
-          </div>
-        </div>
-      )}
-
-      {/* 展开内容 */}
-      {shouldExpand && (
-        <div className="border-t border-border p-3 space-y-2">
-          {/* 参数 */}
+      {expanded && (
+        <div className="space-y-2 border-t border-border px-2.5 py-2">
           <div>
-            <div className="text-xs text-text-muted mb-1">参数</div>
-            <pre className="text-xs bg-surface-3 p-2 rounded overflow-x-auto">
-              {JSON.stringify(toolCall.args, null, 2)}
-            </pre>
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-muted">参数</div>
+            <pre className="max-h-48 overflow-auto rounded-lg bg-surface-3 p-2 text-xs leading-relaxed">{JSON.stringify(toolCall.args, null, 2)}</pre>
           </div>
-
-          {/* 返回结果 */}
           {toolCall.result && (
             <div>
-              <div className="text-xs text-text-muted mb-1">
+              <div className={'mb-1 text-[11px] font-medium uppercase tracking-wide ' + (toolCall.status === 'error' ? 'text-status-error' : 'text-text-muted')}>
                 {toolCall.status === 'error' ? '错误信息' : '返回'}
               </div>
-              <pre className="text-xs bg-surface-3 p-2 rounded overflow-x-auto max-h-60 overflow-y-auto">
-                {toolCall.result}
-              </pre>
+              <pre className="max-h-60 overflow-auto rounded-lg bg-surface-3 p-2 text-xs leading-relaxed">{toolCall.result}</pre>
             </div>
           )}
         </div>

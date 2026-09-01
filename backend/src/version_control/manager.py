@@ -285,7 +285,29 @@ class GitLaneManager:
         worktree = Path(binding.worktree_path)
         if worktree.exists():
             self._git(["worktree", "remove", str(worktree)])
+        self._git(["branch", "-D", binding.managed_branch], check=False)
         self.store.remove_binding(lane)
+
+    def rename_lane(self, lane: str, new_lane: str) -> None:
+        if not self.enabled or lane not in self.store.bindings:
+            return
+        self.store.rename_binding(lane, new_lane)
+
+    def delete_managed_resources(self) -> None:
+        if not self.enabled:
+            return
+        for binding in list(self.store.bindings.values()):
+            if binding.lane == "main":
+                continue
+            self.checkpoint(binding.lane, reason="before_session_delete")
+        for binding in list(self.store.bindings.values()):
+            if binding.lane == "main":
+                continue
+            worktree = Path(binding.worktree_path)
+            if worktree.exists():
+                self._git(["worktree", "remove", str(worktree)])
+            self._git(["branch", "-D", binding.managed_branch], check=False)
+            self.store.remove_binding(binding.lane)
 
     def rollback_lane_creation(self, lane: str) -> None:
         """Remove an unpublished worktree/binding after Lane metadata creation fails."""

@@ -26,6 +26,7 @@ export interface ContentBlock {
 
 // Lane 数据模型
 export interface LanePointer {
+  lane_id?: string;
   lane: string;
   leaf_id: string | null;
   seq: number;
@@ -175,6 +176,23 @@ export interface ToolCall {
   status: 'pending' | 'success' | 'error';
   result?: string;
   lane?: string;
+}
+
+export interface FileChange {
+  path: string;
+  binary: boolean;
+  diff: string;
+  added_lines: number;
+  removed_lines: number;
+  truncated?: boolean;
+}
+
+export interface FileReview {
+  review_id: string;
+  tool_name: string;
+  file_change: FileChange;
+  lane?: string;
+  created_at: number;
 }
 
 // 子 Agent 状态

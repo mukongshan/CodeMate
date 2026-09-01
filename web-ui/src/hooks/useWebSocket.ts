@@ -12,11 +12,15 @@ export function useWebSocket(sessionId: string | null) {
     setWsReconnecting,
     setAgentState,
     setIsRunning,
-    addMessage,
+    resolveLocalUserMessage,
     updateMessage,
     appendMessageText,
     finishStreamingMessages,
+    beginAssistantMessage,
+    attachToolCall,
     updateToolCall,
+    addFileReview,
+    clearFileReviews,
     updateSubagent,
     clearSubagents,
     setPermissionRequest,
@@ -121,24 +125,22 @@ export function useWebSocket(sessionId: string | null) {
 
     switch (type) {
       case 'node_added':
-        if (data.message_id && data.id) {
+        if (data.role === 'user' && data.id) {
+          // 用后端真实 entry id 替换本地乐观插入的 id，
+          // 避免快照回放时同一条用户消息按新 id 重新排到末尾
+          resolveLocalUserMessage(data.id);
+        } else if (data.message_id && data.id) {
           updateMessage(data.message_id, { message_id: data.id });
         }
         break;
 
       case 'text_delta':
-        appendMessageText(data.message_id, data.text);
+        appendMessageText(data.message_id, data.text, data.lane);
         break;
 
       case 'message_start':
-        addMessage({
-          message_id: data.message_id,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          is_streaming: true,
-          lane: data.lane,
-        });
+        // 只登记轮次，气泡等首个 text_delta 或工具调用再建
+        beginAssistantMessage(data.message_id, data.lane);
         break;
 
       case 'message_end':
@@ -147,7 +149,7 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'tool_call_start':
-        updateToolCall(data.call_id, {
+        attachToolCall({
           call_id: data.call_id,
           tool_name: data.tool_name,
           args: data.args,
@@ -162,6 +164,16 @@ export function useWebSocket(sessionId: string | null) {
           status: data.status,
           result: data.result,
         });
+        if (data.status === 'success' && data.metadata?.file_change) {
+          const toolCall = useStore.getState().toolCalls.get(data.call_id);
+          addFileReview({
+            review_id: data.call_id,
+            tool_name: toolCall?.tool_name || 'file_edit',
+            file_change: data.metadata.file_change,
+            lane: data.lane,
+            created_at: Date.now(),
+          });
+        }
         break;
 
       case 'subagent_started':
@@ -300,6 +312,8 @@ export function useWebSocket(sessionId: string | null) {
       addToast({ type: 'error', message: 'Connection is not ready' });
       return;
     }
+
+    clearFileReviews();
 
     wsRef.current.send(
       JSON.stringify({

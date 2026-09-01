@@ -52,9 +52,9 @@ export default function AgentStatusBadge({ state }: AgentStatusBadgeProps) {
   const config = getStateConfig();
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-1 border border-border rounded-md">
+    <div className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-1 px-2 py-1.5">
       <div className={config.color}>{config.icon}</div>
-      <span className="text-sm">{config.label}</span>
+      <span className="hidden text-xs sm:inline">{config.label}</span>
     </div>
   );
 }

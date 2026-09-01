@@ -190,41 +190,6 @@ def _segment_command_name(segment: list[str]) -> str:
     return ""
 
 
-def _allowlist_matches(segment: list[str], allowlist: tuple[str, ...]) -> bool:
-    command_name = _segment_command_name(segment)
-    if not command_name:
-        return False
-
-    command_tokens = [
-        token.lower()
-        for token in segment
-        if token not in {">", ">>", ">|", "<", "<<", "&>", "&>>"}
-    ]
-    for entry in allowlist:
-        entry_tokens = entry.split()
-        if len(entry_tokens) == 1 and entry_tokens[0] == command_name:
-            return True
-        if command_tokens[: len(entry_tokens)] == entry_tokens:
-            return True
-    return False
-
-
-def is_command_allowlisted(
-    command: str, allowlist: Iterable[str] | None
-) -> bool:
-    """Return whether every simple command in a shell expression is allowlisted."""
-    tokens = _shell_tokens(command)
-    if tokens is None or not tokens:
-        return False
-    if "$(" in command or "`" in command:
-        return False
-    normalized = normalize_command_blacklist(allowlist)
-    segments = _command_segments(tokens)
-    return bool(segments) and all(
-        _allowlist_matches(segment, normalized) for segment in segments
-    )
-
-
 def _blacklist_matches(segment: list[str], blacklist: tuple[str, ...]) -> str | None:
     command_name = _segment_command_name(segment)
     if not command_name:
@@ -259,6 +224,10 @@ def is_command_blacklisted(
         matched = _blacklist_matches(segment, normalized)
         if matched:
             return True, matched
+
+    dangerous, dangerous_reason = is_dangerous_command(command)
+    if dangerous:
+        return True, dangerous_reason
     return False, ""
 
 

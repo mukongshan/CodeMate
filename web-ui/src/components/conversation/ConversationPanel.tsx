@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { AlertTriangle, Send, Square, X } from 'lucide-react';
+import { AlertTriangle, MessageSquare, Send, Square, X } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
 import SubagentPanel from './SubagentPanel';
+import FileReviewPanel from './FileReviewPanel';
 import { getLaneConversation } from '../../utils/history';
 
 interface ConversationPanelProps {
@@ -32,20 +33,38 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
     [entries, lanes, currentLane]
   );
   const displayMessages = useMemo(() => {
-    if (messages.length === 0) return historyMessages;
     const historyIds = new Set(historyMessages.map((message) => message.message_id));
     const liveMessages = messages.filter(
       (message) =>
         (message.lane === undefined || message.lane === currentLane) &&
         !historyIds.has(message.message_id)
     );
-    return [...historyMessages, ...liveMessages];
+    // 同一条用户消息可能同时以本地乐观 id 和后端 entry id 存在，按内容去重
+    const historyUserContent = new Set(
+      historyMessages.filter((m) => m.role === 'user').map((m) => m.content.trim())
+    );
+    const merged = [
+      ...historyMessages,
+      ...liveMessages.filter(
+        (message) => message.role !== 'user' || !historyUserContent.has(message.content.trim())
+      ),
+    ];
+    // 时间戳排序保证「用户提问在上、AI 回复在下」，同一毫秒时用户优先
+    return merged
+      .map((message, index) => ({ message, index }))
+      .sort((a, b) => {
+        const byTime = a.message.timestamp - b.message.timestamp;
+        if (byTime !== 0) return byTime;
+        if (a.message.role !== b.message.role) return a.message.role === 'user' ? -1 : 1;
+        return a.index - b.index;
+      })
+      .map((item) => item.message);
   }, [currentLane, historyMessages, messages]);
 
-  // 自动滚动到底部
+  // 自动滚动到底部：流式输出期间用 auto，避免 smooth 动画和高频 delta 叠加导致抖动
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [displayMessages.length, messages.at(-1)?.content]);
+    messagesEndRef.current?.scrollIntoView({ behavior: isRunning ? 'auto' : 'smooth' });
+  }, [displayMessages.length, messages.at(-1)?.content, isRunning]);
 
   // 自动调整 textarea 高度
   useEffect(() => {
@@ -121,49 +140,62 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
           </div>
         )}
 
-        {displayMessages.length === 0 && (
-          <div className="h-full flex items-center justify-center text-sm text-text-muted">
-            当前分支暂无对话
+        {displayMessages.length === 0 && !runtimeError && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <MessageSquare className="h-8 w-8 text-text-muted opacity-40" />
+            <div className="text-sm text-text-muted">当前分支暂无对话</div>
+            <div className="text-xs text-text-muted opacity-70">
+              在下方输入需求，Agent 会在 <span className="font-mono">{currentLane}</span> 分支上执行
+            </div>
           </div>
         )}
 
         {displayMessages.map((message) => (
-          <div key={message.message_id}>
-            <MessageBubble message={message} />
+          <div key={message.message_id} className="space-y-2">
+            {/* 纯工具调用轮次的载体消息没有正文，不渲染空气泡 */}
+            {(message.content.trim().length > 0 || message.is_streaming) && (
+              <MessageBubble message={message} />
+            )}
 
             {/* 工具调用卡片 */}
-            {message.tool_calls?.map((call) => (
-              <div key={call.call_id} className="mt-2">
-                <ToolCallCard toolCall={toolCalls.get(call.call_id)} />
+            {message.tool_calls && message.tool_calls.length > 0 && (
+              <div className="space-y-2 pl-9">
+                {message.tool_calls.map((call) => (
+                  <ToolCallCard key={call.call_id} toolCall={toolCalls.get(call.call_id)} />
+                ))}
               </div>
-            ))}
+            )}
           </div>
         ))}
 
+        <FileReviewPanel />
         <SubagentPanel />
 
         <div ref={messagesEndRef} />
       </div>
 
       {/* 输入区 */}
-      <div className="border-t border-border bg-surface-2 p-4">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-2">
+      <div className="border-t border-border bg-surface-2 p-3">
+        <form
+          onSubmit={handleSubmit}
+          className="flex flex-col gap-2 rounded-xl border border-border bg-surface-1 p-2.5 shadow-sm focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/30"
+        >
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isRunning ? 'Agent 正在执行...' : '输入消息...'}
+            placeholder={isRunning ? 'Agent 正在执行...' : '输入需求，Enter 发送 / Shift+Enter 换行'}
             disabled={isRunning}
-            className="w-full px-3 py-2 bg-surface-1 border border-border rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+            className="w-full resize-none bg-transparent px-1 text-sm leading-relaxed placeholder:text-text-muted focus:outline-none disabled:opacity-50"
             rows={1}
             style={{ maxHeight: '150px' }}
           />
 
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 text-xs text-text-muted">
-              <div className="w-2 h-2 rounded-full bg-lane-blue" />
-              <span>{currentLane}</span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 rounded-full bg-surface-3 px-2 py-0.5 text-xs text-text-secondary">
+              <div className="h-1.5 w-1.5 rounded-full bg-lane-blue" />
+              <span className="font-mono">{currentLane}</span>
             </div>
 
             {isRunning ? (
@@ -173,7 +205,7 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
                   if (interruptRun()) setInterrupting(true);
                 }}
                 disabled={interrupting}
-                className="flex items-center gap-1.5 rounded-md border border-status-error bg-red-50 px-4 py-2 text-status-error transition-colors hover:bg-red-100 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg border border-status-error bg-red-50 px-3.5 py-1.5 text-status-error transition-colors hover:bg-red-100 disabled:opacity-50"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
                 <span className="text-sm">{interrupting ? '中断中...' : '中断'}</span>
@@ -182,7 +214,7 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white rounded-md hover:opacity-90 transition-opacity disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-white shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 <span className="text-sm">发送</span>
                 <Send className="w-4 h-4" />

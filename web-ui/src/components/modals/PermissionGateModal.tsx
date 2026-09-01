@@ -53,7 +53,7 @@ export default function PermissionGateModal({ onClose }: PermissionGateModalProp
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2 font-medium">
             <ShieldCheck className="h-4 w-4 text-accent" />
-            命令工具门禁
+            命令工具黑名单
           </div>
           <button
             type="button"
@@ -76,7 +76,7 @@ export default function PermissionGateModal({ onClose }: PermissionGateModalProp
             <input
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="例如 git status 或 pytest"
+              placeholder="例如 rm 或 git push"
               className="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-accent"
             />
             <button

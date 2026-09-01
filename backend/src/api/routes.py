@@ -22,7 +22,10 @@ from .schemas import (
     CheckpointIn,
     CreateLaneIn,
     CreateSessionIn,
+    CreateWorkspaceIn,
     PublishLaneIn,
+    RenameIn,
+    RenameLaneIn,
     RestoreCheckpointIn,
     UpdatePermissionGateIn,
 )
@@ -51,17 +54,116 @@ def _require_session(manager: SessionManager, session_id: str) -> SessionRuntime
 # --- Session ---------------------------------------------------------------
 
 
+@router.get("/storage/legacy-migration")
+def legacy_migration_plan(manager: SessionManager = Depends(get_manager)) -> dict:
+    items = manager.legacy_migration_plan()
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/storage/legacy-migration")
+def migrate_legacy_sessions(manager: SessionManager = Depends(get_manager)) -> dict:
+    migrated = manager.migrate_legacy_sessions()
+    return {"migrated": migrated}
+
+
+@router.get("/workspaces")
+def list_workspaces(manager: SessionManager = Depends(get_manager)) -> dict:
+    return {"workspaces": manager.list_workspaces()}
+
+
+@router.post("/workspaces", status_code=201)
+def create_workspace(
+    body: CreateWorkspaceIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    try:
+        workspace, created = manager.create_workspace(body.path, body.title)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace": workspace, "created": created}
+
+
+@router.patch("/workspaces/{workspace_id}")
+def rename_workspace(
+    workspace_id: str,
+    body: RenameIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    try:
+        return {"workspace": manager.rename_workspace(workspace_id, body.title)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/workspaces/{workspace_id}", status_code=204, response_model=None)
+def delete_workspace(
+    workspace_id: str,
+    cascade: bool = Query(False),
+    manager: SessionManager = Depends(get_manager),
+) -> None:
+    try:
+        manager.delete_workspace(workspace_id, cascade=cascade)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/workspaces/{workspace_id}/sessions")
+def list_workspace_sessions(
+    workspace_id: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    try:
+        return {"sessions": manager.list_sessions(workspace_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
+
+
+@router.post("/workspaces/{workspace_id}/sessions", status_code=201)
+def create_workspace_session(
+    workspace_id: str,
+    body: CreateSessionIn | None = None,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    try:
+        runtime = manager.create(
+            session_id=body.session_id if body else None,
+            workspace_id=workspace_id,
+            title=body.title if body else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _session_created_payload(runtime)
+
+
 @router.post("/sessions", status_code=201)
 def create_session(
     body: CreateSessionIn | None = None,
     manager: SessionManager = Depends(get_manager),
 ) -> dict:
-    runtime = manager.create(
-        session_id=body.session_id if body else None,
-        workspace=body.workspace if body else None,
-    )
+    try:
+        runtime = manager.create(
+            session_id=body.session_id if body else None,
+            workspace=body.workspace if body else None,
+            workspace_id=body.workspace_id if body else None,
+            title=body.title if body else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _session_created_payload(runtime)
+
+
+def _session_created_payload(runtime: SessionRuntime) -> dict:
     return {
         "session_id": runtime.session_id,
+        "workspace_id": runtime.workspace_id,
+        "title": runtime.title,
         "workspace": str(
             runtime.workspace_for_lane(runtime.lane_manager.current_lane)
         ),
@@ -72,14 +174,33 @@ def create_session(
 
 
 @router.get("/sessions")
-def list_sessions(manager: SessionManager = Depends(get_manager)) -> dict:
-    return {"sessions": manager.list_sessions()}
+def list_sessions(
+    workspace_id: str | None = Query(default=None),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    try:
+        return {"sessions": manager.list_sessions(workspace_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作区不存在") from exc
 
 
 @router.get("/sessions/{session_id}")
 def get_session(session_id: str, manager: SessionManager = Depends(get_manager)) -> dict:
     """返回全部 Entry，供前端首次加载渲染整棵树。"""
     return _require_session(manager, session_id).snapshot()
+
+
+@router.patch("/sessions/{session_id}")
+def rename_session(
+    session_id: str,
+    body: RenameIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    _require_session(manager, session_id)
+    try:
+        return {"session": manager.rename_session(session_id, body.title)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/sessions/{session_id}", status_code=204, response_model=None)
@@ -232,6 +353,21 @@ async def switch_lane(
             "leaf_id": payload["leaf_id"],
             "workspace": payload["git"].get("workspace"),
         },
+    )
+    return payload
+
+
+@router.patch("/sessions/{session_id}/lanes/{lane}")
+async def rename_lane(
+    session_id: str,
+    lane: str,
+    body: RenameLaneIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    payload = runtime.rename_lane(lane, body.name)
+    await runtime.emit(
+        "lane_renamed", {"lane": lane, "new_lane": payload["lane"]}
     )
     return payload
 

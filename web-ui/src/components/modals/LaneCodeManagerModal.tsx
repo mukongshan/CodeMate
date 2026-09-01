@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Archive, Check, GitBranch, History, RotateCcw, Save, Trash2, X } from 'lucide-react';
+import { Archive, Check, GitBranch, History, Pencil, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { useStore } from '../../store';
 import type { CodeCheckpoint, LaneGitState, LanePointer } from '../../types';
 
@@ -89,7 +89,13 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
 
   const request = async (url: string, options?: RequestInit) => {
     const response = await fetch(url, options);
-    const data = await response.json();
+    let data: any = {};
+    if (typeof response.text === 'function') {
+      const text = await response.text();
+      data = text ? JSON.parse(text) : {};
+    } else if (typeof response.json === 'function') {
+      data = await response.json();
+    }
     if (!response.ok) throw new Error(errorMessage(data, '操作失败'));
     return data;
   };
@@ -169,6 +175,49 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     },
     selectedLanePointer?.archived ? 'Lane 已恢复' : 'Lane 已归档'
   );
+
+  const renameLane = async () => {
+    if (!sessionId || selectedLane === 'main') return;
+    const nextLane = window.prompt('新的 Lane 名称', selectedLane)?.trim();
+    if (!nextLane || nextLane === selectedLane) return;
+    setBusy(true);
+    setMessage('');
+    try {
+      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: nextLane }),
+      });
+      setSelectedLane(nextLane);
+      await syncSession();
+      await loadLanes();
+      await loadLaneData(nextLane);
+      addToast({ type: 'success', message: 'Lane 已重命名' });
+    } catch (actionError) {
+      setMessage(actionError instanceof Error ? actionError.message : '重命名失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteLane = async () => {
+    if (!sessionId || selectedLane === 'main' || selectedLane === currentLane) return;
+    if (!window.confirm(`删除 Lane“${selectedLane}”及其托管工作目录？对话树节点会保留。`)) return;
+    setBusy(true);
+    setMessage('');
+    try {
+      await request(`/api/sessions/${sessionId}/lanes/${selectedLane}`, { method: 'DELETE' });
+      setSelectedLane(currentLane);
+      await syncSession();
+      await loadLanes();
+      await loadLaneData(currentLane);
+      addToast({ type: 'success', message: 'Lane 及托管工作目录已删除' });
+    } catch (actionError) {
+      setMessage(actionError instanceof Error ? actionError.message : '删除失败');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const updatingPublishedBranch = Boolean(
     gitState?.published_branch && gitState.published_branch === targetBranch.trim()
@@ -272,8 +321,12 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
                   )}
                 </section>
 
-                <div className="flex items-center justify-between rounded-md border border-border p-3">
-                  <button onClick={archiveOrRestore} disabled={busy || selectedLane === 'main' || selectedLane === currentLane} className="flex items-center gap-1 rounded border border-border px-3 py-1.5 text-xs disabled:opacity-50"><Archive className="h-3 w-3" />{selectedLanePointer?.archived ? '恢复 Lane' : '归档 Lane'}</button>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={renameLane} disabled={busy || selectedLane === 'main'} className="flex items-center gap-1 rounded border border-border px-3 py-1.5 text-xs disabled:opacity-50"><Pencil className="h-3 w-3" />重命名 Lane</button>
+                    <button onClick={archiveOrRestore} disabled={busy || selectedLane === 'main' || selectedLane === currentLane} className="flex items-center gap-1 rounded border border-border px-3 py-1.5 text-xs disabled:opacity-50"><Archive className="h-3 w-3" />{selectedLanePointer?.archived ? '恢复 Lane' : '归档 Lane'}</button>
+                    <button onClick={deleteLane} disabled={busy || selectedLane === 'main' || selectedLane === currentLane} className="flex items-center gap-1 rounded border border-red-200 px-3 py-1.5 text-xs text-status-error disabled:opacity-50"><Trash2 className="h-3 w-3" />删除 Lane</button>
+                  </div>
                   <button onClick={discard} disabled={busy || !changedFiles.length || selectedLanePointer?.archived} className="flex items-center gap-1 rounded border border-red-200 px-3 py-1.5 text-xs text-status-error disabled:opacity-50"><Trash2 className="h-3 w-3" />放弃未保存修改</button>
                 </div>
               </>

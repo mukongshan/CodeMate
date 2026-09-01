@@ -184,6 +184,107 @@ class TestSessionAPI:
         get_resp = client.get(f"/api/sessions/{session_id}")
         assert get_resp.status_code == 400
 
+    def test_workspace_registry_and_hierarchical_session_storage(self, client, temp_dir):
+        workspace_dir = temp_dir / "managed-workspace"
+        workspace_dir.mkdir()
+
+        first = client.post("/api/workspaces", json={"path": str(workspace_dir)})
+        second = client.post("/api/workspaces", json={"path": str(workspace_dir)})
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        workspace_id = first.json()["workspace"]["workspace_id"]
+        assert second.json()["workspace"]["workspace_id"] == workspace_id
+        assert second.json()["created"] is False
+
+        created = client.post(
+            f"/api/workspaces/{workspace_id}/sessions",
+            json={"session_id": "hierarchical", "title": "分级会话"},
+        )
+        assert created.status_code == 201
+        assert created.json()["workspace_id"] == workspace_id
+
+        session_dir = temp_dir / "workspaces" / workspace_id / "sessions" / "hierarchical"
+        assert (session_dir / "session.json").exists()
+        assert (session_dir / "conversation" / "lanes.jsonl").exists()
+        assert not (temp_dir / "sessions" / "hierarchical_lanes.jsonl").exists()
+
+        listed = client.get(f"/api/workspaces/{workspace_id}/sessions").json()["sessions"]
+        assert listed[0]["title"] == "分级会话"
+
+    def test_workspace_and_session_rename(self, client, temp_dir):
+        workspace_dir = temp_dir / "rename-workspace"
+        workspace_dir.mkdir()
+        workspace = client.post(
+            "/api/workspaces", json={"path": str(workspace_dir)}
+        ).json()["workspace"]
+        workspace_id = workspace["workspace_id"]
+        client.post(
+            f"/api/workspaces/{workspace_id}/sessions",
+            json={"session_id": "rename-session"},
+        )
+
+        renamed_workspace = client.patch(
+            f"/api/workspaces/{workspace_id}", json={"title": "新工作区"}
+        )
+        renamed_session = client.patch(
+            "/api/sessions/rename-session", json={"title": "新会话"}
+        )
+
+        assert renamed_workspace.status_code == 200
+        assert renamed_workspace.json()["workspace"]["title"] == "新工作区"
+        assert renamed_session.status_code == 200
+        assert renamed_session.json()["session"]["title"] == "新会话"
+
+    def test_delete_unloaded_session_removes_directory_but_not_workspace(self, client, test_app, temp_dir):
+        workspace_dir = temp_dir / "delete-workspace"
+        workspace_dir.mkdir()
+        workspace_id = client.post(
+            "/api/workspaces", json={"path": str(workspace_dir)}
+        ).json()["workspace"]["workspace_id"]
+        client.post(
+            f"/api/workspaces/{workspace_id}/sessions",
+            json={"session_id": "offline-delete"},
+        )
+        manager = test_app.state.session_manager
+        manager._sessions.pop("offline-delete", None)
+        session_dir = temp_dir / "workspaces" / workspace_id / "sessions" / "offline-delete"
+
+        response = client.delete("/api/sessions/offline-delete")
+
+        assert response.status_code == 204
+        assert not session_dir.exists()
+        assert workspace_dir.exists()
+        assert client.get(f"/api/workspaces/{workspace_id}/sessions").json()["sessions"] == []
+
+    def test_remove_empty_workspace_preserves_user_directory(self, client, temp_dir):
+        workspace_dir = temp_dir / "preserved-workspace"
+        workspace_dir.mkdir()
+        workspace_id = client.post(
+            "/api/workspaces", json={"path": str(workspace_dir)}
+        ).json()["workspace"]["workspace_id"]
+
+        response = client.delete(f"/api/workspaces/{workspace_id}")
+
+        assert response.status_code == 204
+        assert workspace_dir.exists()
+
+    def test_rename_lane(self, client):
+        client.post("/api/sessions", json={"session_id": "rename-lane"})
+        client.post(
+            "/api/sessions/rename-lane/lanes",
+            json={"name": "draft", "description": "draft lane"},
+        )
+
+        response = client.patch(
+            "/api/sessions/rename-lane/lanes/draft", json={"name": "review"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["lane"] == "review"
+        lanes = client.get("/api/sessions/rename-lane/lanes").json()["lanes"]
+        assert {lane["lane"] for lane in lanes} == {"main", "review"}
+
 
 class TestFilesystemAPI:
     """测试本地目录选择和工作区文件 API。"""

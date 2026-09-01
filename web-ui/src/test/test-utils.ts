@@ -11,6 +11,7 @@ export function resetStore() {
     highlightedPaths: new Set(),
     messages: [],
     toolCalls: new Map(),
+    fileReviews: new Map(),
     subagents: new Map(),
     wsConnected: false,
     wsReconnecting: false,

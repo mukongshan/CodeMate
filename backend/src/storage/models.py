@@ -229,6 +229,7 @@ class LanePointer:
     lane: str
     leaf_id: Optional[str]
     seq: int
+    lane_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: float = field(default_factory=time.time)
     created_from: Optional[str] = None
     description: str = ""
@@ -236,6 +237,7 @@ class LanePointer:
 
     def to_jsonl_dict(self) -> dict:
         return {
+            "lane_id": self.lane_id,
             "lane": self.lane,
             "leaf_id": self.leaf_id,
             "seq": self.seq,
@@ -248,6 +250,7 @@ class LanePointer:
     @staticmethod
     def from_jsonl_dict(data: dict) -> "LanePointer":
         return LanePointer(
+            lane_id=str(data.get("lane_id") or uuid.uuid4().hex),
             lane=data["lane"],
             leaf_id=data["leaf_id"],
             seq=int(data["seq"]),
@@ -259,6 +262,7 @@ class LanePointer:
 
     def to_api_dict(self) -> dict:
         return {
+            "lane_id": self.lane_id,
             "lane": self.lane,
             "leaf_id": self.leaf_id,
             "seq": self.seq,
