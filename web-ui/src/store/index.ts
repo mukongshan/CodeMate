@@ -10,6 +10,7 @@ import type {
   PermissionRequest,
   RuntimeErrorNotice,
   Toast,
+  MemoryBudget,
 } from '../types';
 
 interface AppState {
@@ -22,6 +23,7 @@ interface AppState {
   lanes: LanePointer[];
   agentState: AgentState;
   isRunning: boolean;
+  memoryBudget: MemoryBudget;
 
   // 树数据
   entries: Entry[];
@@ -56,6 +58,7 @@ interface AppState {
   setCurrentLane: (lane: string) => void;
   setAgentState: (state: AgentState) => void;
   setIsRunning: (running: boolean) => void;
+  setMemoryBudget: (budget: Partial<MemoryBudget>) => void;
   setCommandBlacklist: (commands: string[]) => void;
 
   addEntry: (entry: Entry) => void;
@@ -104,6 +107,14 @@ export const useStore = create<AppState>((set) => ({
   lanes: [],
   agentState: 'idle',
   isRunning: false,
+  memoryBudget: {
+    used_tokens: 0,
+    max_tokens: 8000,
+    reserve_tokens: 2000,
+    threshold_tokens: 6400,
+    remaining_tokens: 8000,
+    utilization_ratio: 0,
+  },
 
   entries: [],
   highlightedPaths: new Set(),
@@ -143,6 +154,7 @@ export const useStore = create<AppState>((set) => ({
         lanes: data.lanes || [],
         agentState: data.agent_state || 'idle',
         isRunning: data.is_running || false,
+        memoryBudget: data.memory ? { ...state.memoryBudget, ...data.memory } : state.memoryBudget,
         entries: data.entries || [],
         messages: resetTransient ? [] : state.messages,
         toolCalls: resetTransient ? new Map() : state.toolCalls,
@@ -164,6 +176,14 @@ export const useStore = create<AppState>((set) => ({
       lanes: [],
       agentState: 'idle',
       isRunning: false,
+      memoryBudget: {
+        used_tokens: 0,
+        max_tokens: 8000,
+        reserve_tokens: 2000,
+        threshold_tokens: 6400,
+        remaining_tokens: 8000,
+        utilization_ratio: 0,
+      },
       entries: [],
       highlightedPaths: new Set(),
       messages: [],
@@ -200,6 +220,8 @@ export const useStore = create<AppState>((set) => ({
     ),
   setAgentState: (state) => set({ agentState: state }),
   setIsRunning: (running) => set({ isRunning: running }),
+  setMemoryBudget: (budget) =>
+    set((state) => ({ memoryBudget: { ...state.memoryBudget, ...budget } })),
   setCommandBlacklist: (commands) => set({ commandBlacklist: commands }),
 
   addEntry: (entry) =>

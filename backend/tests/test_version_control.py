@@ -336,6 +336,106 @@ def test_republish_rejects_a_target_checked_out_in_another_worktree(tmp_path):
         git(repo, "worktree", "remove", "--force", str(checked_out))
 
 
+def test_integrate_published_lane_creates_main_checkpoint_and_record(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "integrate-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    target_branch = git(repo, "symbolic-ref", "--short", "HEAD")
+    feature = manager.create_lane("feature", "main")
+    feature_workspace = Path(feature.worktree_path)
+    (feature_workspace / "readme.txt").write_text("lane result\n", encoding="utf-8")
+    checkpoint = manager.checkpoint("feature", reason="manual")
+    assert checkpoint is not None
+    published = manager.publish("feature", "feature/result", mode="branch")
+
+    preview = manager.integration_preview("feature", target_branch)
+    assert preview["source_branch"] == "feature/result"
+    assert preview["target_branch"] == target_branch
+    assert preview["target_dirty"] is False
+    assert preview["files"] == [{"status": "M", "path": "readme.txt"}]
+
+    result = manager.integrate(
+        "feature",
+        target_branch,
+        strategy="merge",
+        conversation_entry_id="main-entry",
+    )
+
+    assert result["status"] == "completed"
+    assert result["action"] == "integrated"
+    assert result["source_commit"] == published["published_commit"]
+    assert git(repo, "rev-parse", target_branch) == result["target_after"]
+    assert git(repo, "show", f"{target_branch}:readme.txt") == "lane result"
+    assert result["checkpoint"]["lane"] == "main"
+    assert result["checkpoint"]["integration_id"] == result["integration_id"]
+    assert result["checkpoint"]["conversation_entry_id"] == "main-entry"
+
+    records = manager.list_integrations()
+    assert len(records) == 1
+    assert records[0]["state"] == "completed"
+    assert records[0]["source_lane"] == "feature"
+    assert records[0]["main_checkpoint_id"] == result["checkpoint"]["checkpoint_id"]
+    assert manager.get_binding("main").head_commit == result["target_after"]
+
+
+def test_integrate_rejects_dirty_main_workspace(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "integrate-dirty-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    feature_workspace = Path(feature.worktree_path)
+    (feature_workspace / "readme.txt").write_text("lane result\n", encoding="utf-8")
+    assert manager.checkpoint("feature", reason="manual") is not None
+    manager.publish("feature", "feature/result", mode="branch")
+
+    (repo / "uncommitted.txt").write_text("do not overwrite\n", encoding="utf-8")
+
+    with pytest.raises(AgentError) as raised:
+        manager.integrate("feature", strategy="merge")
+
+    assert "未提交修改" in raised.value.message
+    assert (repo / "uncommitted.txt").read_text(encoding="utf-8") == "do not overwrite\n"
+    assert manager.list_integrations() == []
+
+
+def test_integrate_conflict_aborts_and_records_conflicted_files(tmp_path):
+    repo = create_repo(tmp_path)
+    manager = GitLaneManager(
+        "integrate-conflict-session",
+        repo,
+        tmp_path / "data",
+        tmp_path / "worktrees",
+        1024 * 1024,
+    )
+    feature = manager.create_lane("feature", "main")
+    feature_workspace = Path(feature.worktree_path)
+    (feature_workspace / "readme.txt").write_text("feature change\n", encoding="utf-8")
+    assert manager.checkpoint("feature", reason="manual") is not None
+    manager.publish("feature", "feature/result", mode="branch")
+
+    (repo / "readme.txt").write_text("main change\n", encoding="utf-8")
+    assert manager.checkpoint("main", reason="manual") is not None
+
+    with pytest.raises(AgentError):
+        manager.integrate("feature", strategy="merge")
+
+    assert git(repo, "status", "--porcelain") == ""
+    records = manager.list_integrations()
+    assert len(records) == 1
+    assert records[0]["state"] == "failed"
+    assert records[0]["conflicted_files"] == ["readme.txt"]
+
+
 def test_publish_squash_creates_formal_commit_from_source_main(tmp_path):
     repo = create_repo(tmp_path)
     source_before = (repo / "readme.txt").read_text(encoding="utf-8")

@@ -45,7 +45,11 @@ def entry_to_message(entry: Entry) -> Message:
             content = "[会话压缩摘要]\n" + content
         elif entry.entry_type == "branch_summary":
             content = "[分支摘要]\n" + content
-        return Message(role=role, content=content)  # type: ignore[arg-type]
+        return Message(
+            role=role,  # type: ignore[arg-type]
+            content=content,
+            reasoning_content=entry.reasoning_content,
+        )
 
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []
@@ -70,12 +74,18 @@ def entry_to_message(entry: Entry) -> Message:
             return Message(
                 role="tool", content=first.content, tool_call_id=first.tool_call_id
             )
-        return Message(role="tool", content="", tool_call_id=None)
+        return Message(
+            role="tool",
+            content="",
+            tool_call_id=None,
+            reasoning_content=entry.reasoning_content,
+        )
 
     return Message(
         role=entry.role,  # type: ignore[arg-type]
         content="\n".join(p for p in text_parts if p) or None,
         tool_calls=tool_calls or None,
+        reasoning_content=entry.reasoning_content,
     )
 
 
@@ -152,7 +162,12 @@ def repair_message_sequence(messages: list[Message]) -> list[Message]:
             idx += 1
             continue
 
-        if message.role == "assistant" and not message.content and not message.tool_calls:
+        if (
+            message.role == "assistant"
+            and not message.content
+            and not message.tool_calls
+            and not message.reasoning_content
+        ):
             idx += 1
             continue
 
@@ -230,9 +245,12 @@ class TreeMessageProvider:
         return await self.append_entry(
             role=message.role,  # type: ignore[arg-type]
             content=message_to_entry_content(message),
+            reasoning_content=message.reasoning_content,
         )
 
-    async def append_entry(self, role: str, content) -> str:
+    async def append_entry(
+        self, role: str, content, reasoning_content: Optional[str] = None
+    ) -> str:
         """直接以 Entry 形态追加，供需要打包多个工具结果的场景使用。
 
         两步是一个整体：以当前叶子为 parent 写入新节点，然后把 Lane 指针推进到
@@ -240,7 +258,13 @@ class TreeMessageProvider:
         分支创建逻辑（02 号文档 3.1 节）。
         """
         leaf_id = self.lane_manager.get_lane(self.lane).leaf_id
-        entry = Entry(parent=leaf_id, lane=self.lane, role=role, content=content)  # type: ignore[arg-type]
+        entry = Entry(
+            parent=leaf_id,
+            lane=self.lane,
+            role=role,
+            content=content,
+            reasoning_content=reasoning_content,
+        )  # type: ignore[arg-type]
         await self.storage.append_message(entry)
         self.lane_manager.update_lane(self.lane, entry.id)
         return entry.id

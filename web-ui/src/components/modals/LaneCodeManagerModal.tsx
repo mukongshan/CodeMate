@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Archive, Check, GitBranch, History, Pencil, RotateCcw, Save, Trash2, X } from 'lucide-react';
+import { Archive, Check, GitBranch, GitMerge, History, Pencil, RotateCcw, Save, Trash2, X } from 'lucide-react';
 import { useStore } from '../../store';
-import type { CodeCheckpoint, LaneGitState, LanePointer } from '../../types';
+import type { CodeCheckpoint, CodeIntegration, CodeIntegrationPreview, LaneGitState, LanePointer } from '../../types';
 
 interface LaneCodeManagerModalProps {
   onClose: () => void;
@@ -17,6 +17,7 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
   const [selectedLane, setSelectedLane] = useState(currentLane);
   const [gitState, setGitState] = useState<LaneGitState | null>(null);
   const [checkpoints, setCheckpoints] = useState<CodeCheckpoint[]>([]);
+  const [integrations, setIntegrations] = useState<CodeIntegration[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [allowBlocked, setAllowBlocked] = useState(false);
   const [selectedCheckpoint, setSelectedCheckpoint] = useState('');
@@ -24,6 +25,9 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
   const [targetBranch, setTargetBranch] = useState('');
   const [publishMode, setPublishMode] = useState<'branch' | 'squash'>('branch');
   const [baseBranch, setBaseBranch] = useState('');
+  const [integrationTargetBranch, setIntegrationTargetBranch] = useState('');
+  const [integrationStrategy, setIntegrationStrategy] = useState<'merge' | 'ff' | 'squash'>('merge');
+  const [integrationPreview, setIntegrationPreview] = useState<CodeIntegrationPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -47,18 +51,22 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
       fetch(`/api/sessions/${sessionId}/lanes/${lane}/status`),
       fetch(`/api/sessions/${sessionId}/lanes/${lane}/checkpoints`),
     ]);
+    const integrationResponse = await fetch(`/api/sessions/${sessionId}/integrations`);
     const statusData = await statusResponse.json();
     const checkpointData = await checkpointResponse.json();
+    const integrationData = integrationResponse.ok ? await integrationResponse.json() : {};
     if (!statusResponse.ok) throw new Error(errorMessage(statusData, '读取代码状态失败'));
     if (!checkpointResponse.ok) throw new Error(errorMessage(checkpointData, '读取检查点失败'));
     const nextGitState = statusData.git || null;
     setGitState(nextGitState);
     setCheckpoints(checkpointData.checkpoints || []);
+    setIntegrations(integrationData.integrations || []);
     setSelectedPaths(statusData.git?.changed_files || []);
     setSelectedCheckpoint(checkpointData.checkpoints?.[checkpointData.checkpoints.length - 1]?.checkpoint_id || '');
     setTargetBranch(nextGitState?.published_branch || `${lane}-result`);
     setPublishMode(nextGitState?.published_mode === 'squash' ? 'squash' : 'branch');
     setBaseBranch(nextGitState?.published_base_branch || '');
+    setIntegrationPreview(null);
   };
 
   const loadLanes = async () => {
@@ -67,6 +75,8 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     const data = await response.json();
     if (!response.ok) throw new Error(errorMessage(data, '读取 Lane 列表失败'));
     setAllLanes(data.lanes || []);
+    const mainBranch = (data.lanes || []).find((lane: LanePointer) => lane.lane === 'main')?.git?.managed_branch;
+    if (mainBranch) setIntegrationTargetBranch(mainBranch);
   };
 
   useEffect(() => {
@@ -168,6 +178,47 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     );
   };
 
+  const previewLaneIntegration = async () => {
+    if (!sessionId || selectedLane === 'main') return;
+    setBusy(true);
+    setMessage('');
+    try {
+      const query = integrationTargetBranch
+        ? `?target_branch=${encodeURIComponent(integrationTargetBranch)}`
+        : '';
+      const result = await request(
+        `/api/sessions/${sessionId}/lanes/${selectedLane}/integrate/preview${query}`
+      );
+      setIntegrationPreview(result);
+    } catch (previewError) {
+      setIntegrationPreview(null);
+      setMessage(previewError instanceof Error ? previewError.message : '读取集成预览失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const integrateLane = () => {
+    if (!integrationPreview || integrationPreview.target_dirty) return;
+    if (!window.confirm(`将 ${integrationPreview.source_branch} 集成到 ${integrationPreview.target_branch}，并在 main Lane 创建检查点，是否继续？`)) return;
+    let successMessage = 'Lane 代码已集成到 main 分支';
+    return runAction(
+      async () => {
+        const result = await request(`/api/sessions/${sessionId}/lanes/${selectedLane}/integrate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_branch: integrationTargetBranch || null,
+            strategy: integrationStrategy,
+          }),
+        });
+        successMessage = result.action === 'unchanged' ? '该发布分支已经集成到 main' : 'Lane 代码已集成到 main 分支';
+        setIntegrationPreview(null);
+      },
+      () => successMessage
+    );
+  };
+
   const archiveOrRestore = () => runAction(
     async () => {
       const endpoint = selectedLanePointer?.archived ? 'restore-lane' : 'archive';
@@ -227,6 +278,12 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
     gitState?.published_lane_head &&
     gitState.published_lane_head === gitState.head_commit
   );
+  const mainBranch = allLanes.find((lane) => lane.lane === 'main')?.git?.managed_branch || '';
+  const selectedLaneIntegrations = integrations
+    .filter((item) => item.source_lane === selectedLane)
+    .slice()
+    .reverse()
+    .slice(0, 3);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -320,6 +377,45 @@ export default function LaneCodeManagerModal({ onClose }: LaneCodeManagerModalPr
                     </div>
                   )}
                 </section>
+
+                {selectedLane !== 'main' && gitState.published_branch && (
+                  <section className="rounded-md border border-border p-3">
+                    <h4 className="mb-2 flex items-center gap-2 font-medium"><GitMerge className="h-4 w-4" />集成到 main</h4>
+                    <p className="mb-2 text-xs text-text-muted">将已发布的普通 Git 分支合并到主目录当前分支，并在 main Lane 留下代码检查点。</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <input value={integrationTargetBranch || mainBranch} readOnly placeholder="主目录当前分支" className="rounded border border-border bg-surface-1 px-2 py-1.5 text-xs text-text-muted" />
+                      <select value={integrationStrategy} disabled={busy} onChange={(event) => { setIntegrationStrategy(event.target.value as 'merge' | 'ff' | 'squash'); setIntegrationPreview(null); }} className="rounded border border-border bg-surface-1 px-2 py-1.5 text-xs disabled:opacity-60">
+                        <option value="merge">保留分支历史（Merge Commit）</option>
+                        <option value="ff">快速前进（Fast-forward）</option>
+                        <option value="squash">压缩为一个提交</option>
+                      </select>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button onClick={previewLaneIntegration} disabled={busy || selectedLanePointer?.archived || !mainBranch} className="rounded border border-border px-3 py-1.5 text-xs disabled:opacity-50">预览集成</button>
+                      {integrationPreview && <button onClick={integrateLane} disabled={busy || integrationPreview.target_dirty || integrationPreview.identical} className="rounded bg-accent px-3 py-1.5 text-xs text-white disabled:opacity-50">{integrationPreview.identical ? '已经集成' : '确认集成'}</button>}
+                    </div>
+                    {integrationPreview && (
+                      <div className="mt-2 space-y-1 rounded bg-surface-1 p-2 text-xs">
+                        <div>来源：<span className="font-mono">{integrationPreview.source_branch}</span> · {integrationPreview.source_commit.slice(0, 8)}</div>
+                        <div>目标：<span className="font-mono">{integrationPreview.target_branch}</span> · {integrationPreview.target_commit.slice(0, 8)}</div>
+                        <div>变更文件：{integrationPreview.files.length} 个 · Merge Base：<span className="font-mono">{integrationPreview.merge_base.slice(0, 8)}</span></div>
+                        {integrationPreview.target_dirty && <div className="text-status-warning">主目录存在未提交修改，请先保存或放弃修改。</div>}
+                        {!integrationPreview.target_dirty && integrationPreview.files.length === 0 && <div className="text-text-muted">来源分支没有新的文件变更。</div>}
+                      </div>
+                    )}
+                    {selectedLaneIntegrations.length > 0 && (
+                      <div className="mt-3 border-t border-border pt-2 text-xs">
+                        <div className="mb-1 font-medium">最近集成记录</div>
+                        {selectedLaneIntegrations.map((item) => (
+                          <div key={item.integration_id} className="flex items-center justify-between gap-2 py-1 text-text-muted">
+                            <span>{item.state === 'completed' ? '已完成' : item.state} · {item.target_branch}</span>
+                            <span className="font-mono">{(item.target_after || item.target_before).slice(0, 8)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
                   <div className="flex flex-wrap gap-2">

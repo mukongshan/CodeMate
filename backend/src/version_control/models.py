@@ -113,6 +113,7 @@ class CodeCheckpoint:
     checkpoint_id: str = field(
         default_factory=lambda: f"cp_{uuid.uuid4().hex[:12]}"
     )
+    integration_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:

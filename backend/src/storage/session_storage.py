@@ -54,9 +54,11 @@ def _entry_token_cost(entry: Entry) -> int:
     from .models import TextBlock, ToolResultBlock, ToolUseBlock
 
     if isinstance(entry.content, str):
-        return estimate_tokens(entry.content)
+        return estimate_tokens(entry.content) + estimate_tokens(
+            entry.reasoning_content or ""
+        )
 
-    total = 0
+    total = estimate_tokens(entry.reasoning_content or "")
     for block in entry.content:
         if isinstance(block, TextBlock):
             total += estimate_tokens(block.text)

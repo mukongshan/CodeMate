@@ -5,6 +5,7 @@ export interface Entry {
   lane: string;
   seq: number;
   role: 'user' | 'assistant' | 'tool';
+  entry_type?: 'message' | 'compaction' | 'branch_summary' | string;
   content: string;
   full_content: string | ContentBlock[];
   tool_names: string[];
@@ -74,7 +75,45 @@ export interface CodeCheckpoint {
   run_id?: string | null;
   run_status?: string | null;
   changed_files: CodeDiffFile[];
+  integration_id?: string | null;
   created_at: number;
+}
+
+export interface CodeIntegration {
+  operation_id?: string;
+  integration_id: string;
+  operation?: string;
+  state: 'prepared' | 'completed' | 'failed' | string;
+  source_lane: string;
+  source_branch: string;
+  source_commit: string;
+  target_branch: string;
+  target_before: string;
+  target_after?: string;
+  strategy: 'merge' | 'ff' | 'squash' | string;
+  main_checkpoint_id?: string | null;
+  conversation_entry_id?: string | null;
+  changed_files?: CodeDiffFile[];
+  conflicted_files?: string[];
+  error?: string;
+  timestamp?: number;
+}
+
+export interface CodeIntegrationPreview {
+  enabled: boolean;
+  reason?: string;
+  lane: string;
+  source_branch: string;
+  source_commit: string;
+  target_branch: string;
+  target_commit: string;
+  merge_base: string;
+  identical: boolean;
+  can_fast_forward: boolean;
+  target_ahead: boolean;
+  target_changed_files: string[];
+  target_dirty: boolean;
+  files: CodeDiffFile[];
 }
 
 export interface CodeDiffFile {
@@ -153,6 +192,15 @@ export interface WSEnvelope {
 }
 
 // 会话快照
+export interface MemoryBudget {
+  used_tokens: number;
+  max_tokens: number;
+  reserve_tokens: number;
+  threshold_tokens: number;
+  remaining_tokens: number;
+  utilization_ratio: number;
+}
+
 export interface SessionSnapshot {
   session_id: string;
   workspace: string;
@@ -165,7 +213,9 @@ export interface SessionSnapshot {
   agent_state: AgentState;
   is_running: boolean;
   lanes: LanePointer[];
+  integrations?: CodeIntegration[];
   entries: Entry[];
+  memory?: MemoryBudget;
 }
 
 // 工具调用状态

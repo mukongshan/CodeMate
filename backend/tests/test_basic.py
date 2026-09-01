@@ -187,6 +187,25 @@ class TestConfig:
         assert config.checkpoint_max_pending_files == 20
         assert config.checkpoint_max_pending_seconds == 1800
 
+    def test_integer_env_accepts_scientific_notation(self, monkeypatch):
+        """整数型环境变量支持科学计数法，并拒绝非整数小数。"""
+        monkeypatch.setenv("MAX_CONTEXT_TOKENS", "2e16")
+        monkeypatch.setenv("CONTEXT_RESERVE_TOKENS", "2e12")
+        monkeypatch.setenv("COMPACTION_KEEP_RECENT_TOKENS", "2e12")
+        monkeypatch.setenv("COMPACTION_SUMMARY_MAX_TOKENS", "2e11")
+        monkeypatch.setenv("LLM_MAX_TOKENS", "2e13")
+
+        config = AppConfig.from_env()
+
+        assert config.max_context_tokens == 20_000_000_000_000_000
+        assert config.context_reserve_tokens == 2_000_000_000_000
+        assert config.compaction_keep_recent_tokens == 2_000_000_000_000
+        assert config.compaction_summary_max_tokens == 200_000_000_000
+        assert config.llm.max_tokens == 20_000_000_000_000
+
+        monkeypatch.setenv("MAX_CONTEXT_TOKENS", "1.5")
+        assert AppConfig.from_env().max_context_tokens == 8000
+
     def test_from_env_with_api_key(self, monkeypatch):
         """测试从环境变量加载 API Key。"""
         monkeypatch.setenv("LLM_PROVIDER", "deepseek")

@@ -119,6 +119,35 @@ class TestAgentLoop:
         assert "立即调用合适的文件编辑工具" in (calls[1][-1].content or "")
 
     @pytest.mark.asyncio
+    async def test_truncated_tool_call_preserves_reasoning_for_continuation(
+        self, agent, mock_llm_client
+    ):
+        calls = []
+
+        async def mock_chat(messages, *args, **kwargs):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield DoneEvent(
+                    stop_reason="length",
+                    reasoning_content="需要调用文件工具",
+                    partial_tool_calls=True,
+                )
+                return
+            yield TextDeltaEvent(text="已完成")
+            yield DoneEvent(stop_reason="stop", usage={"total_tokens": 2})
+
+        mock_llm_client.chat = mock_chat
+
+        result = await agent.run("请修改文件")
+
+        assert result.status == "completed"
+        assert len(calls) == 2
+        assistant_messages = [message for message in calls[1] if message.role == "assistant"]
+        assert assistant_messages[-1].reasoning_content == "需要调用文件工具"
+        assert calls[1][-1].role == "user"
+        assert "JSON 参数闭合" in (calls[1][-1].content or "")
+
+    @pytest.mark.asyncio
     async def test_max_iterations(self, agent, mock_llm_client):
         """测试达到最大迭代次数。"""
         # 模拟 LLM 一直要求调用工具

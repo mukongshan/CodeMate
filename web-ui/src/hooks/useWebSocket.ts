@@ -12,6 +12,7 @@ export function useWebSocket(sessionId: string | null) {
     setWsReconnecting,
     setAgentState,
     setIsRunning,
+    setMemoryBudget,
     resolveLocalUserMessage,
     updateMessage,
     appendMessageText,
@@ -211,6 +212,23 @@ export function useWebSocket(sessionId: string | null) {
         if (eventBelongsToCurrentLane) setAgentState(data.state);
         break;
 
+      case 'context_loaded':
+        if (eventBelongsToCurrentLane && data.memory) {
+          setMemoryBudget(data.memory);
+        }
+        break;
+
+      case 'compaction_completed':
+        if (!eventBelongsToCurrentLane) break;
+        if (data.memory) setMemoryBudget(data.memory);
+        addToast({ type: 'success', message: '上下文已压缩，Agent 已保留关键进展' });
+        break;
+
+      case 'compaction_failed':
+        if (!eventBelongsToCurrentLane) break;
+        addToast({ type: 'warning', message: data.reason || '上下文压缩失败，将继续使用现有记忆' });
+        break;
+
       case 'run_started':
         if (!eventBelongsToCurrentLane) break;
         clearRuntimeError();
@@ -270,6 +288,14 @@ export function useWebSocket(sessionId: string | null) {
         void syncSessionSnapshot();
         break;
 
+      case 'lane_code_integrated':
+        addToast({
+          type: 'success',
+          message: `${data.source_branch || data.lane} 已集成到 ${data.target_branch || 'main'}`,
+        });
+        void syncSessionSnapshot();
+        break;
+
       case 'lane_sync_state_changed':
         addToast({
           type: 'warning',
@@ -324,6 +350,34 @@ export function useWebSocket(sessionId: string | null) {
     );
   };
 
+  const compactSession = async (lane?: string) => {
+    if (!sessionId) return false;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/compact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lane: lane || useStore.getState().currentLane }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast({ type: 'warning', message: data.detail || '当前无法压缩上下文' });
+        return false;
+      }
+      if (data.memory) setMemoryBudget(data.memory);
+      if (data.status === 'completed') {
+        addToast({ type: 'success', message: '上下文压缩完成' });
+      } else if (data.reason) {
+        addToast({ type: 'info', message: data.reason });
+      }
+      await syncSessionSnapshot();
+      return data.status === 'completed';
+    } catch (error) {
+      console.warn('Failed to compact session:', error);
+      addToast({ type: 'error', message: '上下文压缩请求失败' });
+      return false;
+    }
+  };
+
   const sendPermissionResponse = (requestId: string, action: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return;
@@ -352,5 +406,6 @@ export function useWebSocket(sessionId: string | null) {
     sendMessage,
     sendPermissionResponse,
     interruptRun,
+    compactSession,
   };
 }

@@ -90,6 +90,26 @@ class LaneGitStore:
                 "\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8"
             )
             checkpoint_tmp.replace(self.checkpoint_path)
+        if self.operation_path.exists():
+            rewritten_operations: list[str] = []
+            for line in self.operation_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    rewritten_operations.append(line)
+                    continue
+                if record.get("lane") == lane:
+                    record["lane"] = new_lane
+                if record.get("source_lane") == lane:
+                    record["source_lane"] = new_lane
+                rewritten_operations.append(json.dumps(record, ensure_ascii=False))
+            operations_tmp = self.operation_path.with_suffix(".tmp")
+            operations_tmp.write_text(
+                "\n".join(rewritten_operations)
+                + ("\n" if rewritten_operations else ""),
+                encoding="utf-8",
+            )
+            operations_tmp.replace(self.operation_path)
 
     def append_checkpoint(self, checkpoint: CodeCheckpoint) -> None:
         with self.checkpoint_path.open("a", encoding="utf-8") as handle:
@@ -136,6 +156,19 @@ class LaneGitStore:
             if isinstance(record, dict):
                 result.append(record)
         return result
+
+    def list_integrations(self) -> list[dict]:
+        latest: dict[str, dict] = {}
+        for record in self.list_operations():
+            if record.get("operation") != "integrate_lane":
+                continue
+            operation_id = record.get("operation_id")
+            if operation_id:
+                latest[operation_id] = record
+        return sorted(
+            latest.values(),
+            key=lambda item: float(item.get("timestamp", 0)),
+        )
 
     def pending_operations(self) -> list[dict]:
         latest: dict[str, dict] = {}

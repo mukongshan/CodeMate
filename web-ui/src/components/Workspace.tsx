@@ -11,12 +11,14 @@ interface WorkspaceProps {
   sendMessage: (content: string, lane?: string) => void;
   sendPermissionResponse: (requestId: string, action: string) => void;
   interruptRun: () => boolean;
+  compactSession: (lane?: string) => Promise<boolean>;
 }
 
 export default function Workspace({
   sendMessage,
   sendPermissionResponse,
   interruptRun,
+  compactSession,
 }: WorkspaceProps) {
   const { permissionRequest, showCompareDrawer, showWorkspaceFiles } = useStore();
   const [splitRatio, setSplitRatio] = useState(40); // 左侧占比
@@ -65,7 +67,11 @@ export default function Workspace({
 
         {/* 右侧：对话面板 */}
         <div className="flex-1 min-w-0">
-          <ConversationPanel sendMessage={sendMessage} interruptRun={interruptRun} />
+          <ConversationPanel
+            sendMessage={sendMessage}
+            interruptRun={interruptRun}
+            compactSession={compactSession}
+          />
         </div>
       </div>
 

@@ -89,7 +89,10 @@ class OpenAIProvider:
     ) -> AsyncIterator[LLMEvent]:
         params: dict = {
             "model": self.model,
-            "messages": [m.to_api_dict() for m in messages],
+            "messages": [
+                m.to_api_dict(include_reasoning_content=self.name == "deepseek")
+                for m in messages
+            ],
             "stream": True,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
@@ -103,6 +106,7 @@ class OpenAIProvider:
         buffer = StreamBuffer()
         stop_reason = "stop"
         usage: dict = {}
+        reasoning_parts: list[str] = []
 
         try:
             stream = await self.client.chat.completions.create(**params)
@@ -118,6 +122,10 @@ class OpenAIProvider:
 
                 choice = chunk.choices[0]
                 delta = choice.delta
+
+                reasoning_content = getattr(delta, "reasoning_content", None)
+                if reasoning_content:
+                    reasoning_parts.append(reasoning_content)
 
                 if delta is not None and delta.content:
                     buffer.add_text_delta(delta.content)
@@ -147,12 +155,21 @@ class OpenAIProvider:
             yield ErrorEvent(message=f"{exc.__class__.__name__}: {exc}", retryable=retryable)
             return
 
-        for call in buffer.get_complete_tool_calls():
+        partial_tool_calls = buffer.has_incomplete_tool_calls()
+        complete_tool_calls = (
+            [] if partial_tool_calls else buffer.get_complete_tool_calls()
+        )
+        for call in complete_tool_calls:
             yield ToolCallEvent(
                 id=call["id"], name=call["name"], arguments=call["arguments"]
             )
 
-        yield DoneEvent(stop_reason=stop_reason, usage=usage)
+        yield DoneEvent(
+            stop_reason=stop_reason,
+            usage=usage,
+            reasoning_content="".join(reasoning_parts) or None,
+            partial_tool_calls=partial_tool_calls,
+        )
 
 
 class DeepSeekProvider(OpenAIProvider):

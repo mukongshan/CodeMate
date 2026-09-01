@@ -36,8 +36,9 @@ class Message:
     content: Optional[str] = None
     tool_calls: Optional[list[ToolCall]] = None
     tool_call_id: Optional[str] = None
+    reasoning_content: Optional[str] = None
 
-    def to_api_dict(self) -> dict:
+    def to_api_dict(self, *, include_reasoning_content: bool = True) -> dict:
         """转成 OpenAI Chat Completions 协议的 message 对象。"""
         payload: dict = {"role": self.role}
 
@@ -48,6 +49,13 @@ class Message:
             return payload
 
         payload["content"] = self.content
+
+        if (
+            self.role == "assistant"
+            and include_reasoning_content
+            and self.reasoning_content is not None
+        ):
+            payload["reasoning_content"] = self.reasoning_content
 
         if self.tool_calls:
             payload["tool_calls"] = [
@@ -104,6 +112,8 @@ class DoneEvent:
 
     stop_reason: str
     usage: dict = field(default_factory=dict)
+    reasoning_content: Optional[str] = None
+    partial_tool_calls: bool = False
 
 
 @dataclass

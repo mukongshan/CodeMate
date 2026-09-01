@@ -547,6 +547,270 @@ class GitLaneManager:
         self.get_binding(lane)
         return [item.to_dict() for item in self.store.list_checkpoints(lane)]
 
+    def list_integrations(self) -> list[dict]:
+        if not self.enabled:
+            return []
+        return self.store.list_integrations()
+
+    def integration_preview(
+        self, lane: str, target_branch: Optional[str] = None
+    ) -> dict:
+        if not self.enabled:
+            return {"enabled": False, "reason": self.disabled_reason, "files": []}
+
+        binding = self.get_binding(lane)
+        source_branch = binding.published_branch
+        if not source_branch or not binding.published_commit:
+            raise AgentError(
+                message="当前 Lane 尚未发布普通 Git 分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"lane": lane},
+                suggestions=["先发布 Lane，再执行代码集成"],
+            )
+
+        current_branch = self._source_branch()
+        target = (target_branch or current_branch).strip()
+        main_binding = self.get_binding("main")
+        if current_branch == "HEAD":
+            raise AgentError(
+                message="主目录当前处于 detached HEAD，不能执行分支集成",
+                code=CODE_GIT_OPERATION_FAILED,
+                suggestions=["先在主目录 checkout 一个目标 Git 分支"],
+            )
+        if target != current_branch:
+            raise AgentError(
+                message="第一版集成只允许目标为主目录当前分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"current_branch": current_branch, "target_branch": target},
+                suggestions=[f"将主目录切换到 {target} 后再重试"],
+            )
+        if main_binding.managed_branch != current_branch:
+            raise AgentError(
+                message="主目录已切换到与 main Lane 不一致的 Git 分支",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "main_lane_branch": main_binding.managed_branch,
+                    "current_branch": current_branch,
+                },
+                suggestions=["先恢复 main Lane 绑定的主分支，再执行代码集成"],
+            )
+        if source_branch == target:
+            raise AgentError(
+                message="源分支与目标分支不能相同",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"source_branch": source_branch, "target_branch": target},
+            )
+
+        source_exists = self._git(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{source_branch}"],
+            check=False,
+        ).returncode == 0
+        if not source_exists:
+            raise AgentError(
+                message=f"发布分支不存在: {source_branch}",
+                code=CODE_GIT_OPERATION_FAILED,
+                suggestions=["重新发布当前 Lane 到新的普通 Git 分支"],
+            )
+
+        source_commit = self._git_output(["rev-parse", source_branch])
+        if source_commit != binding.published_commit:
+            raise AgentError(
+                message="已发布分支在 CodeMate 之外发生了变化，不能直接集成",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "source_branch": source_branch,
+                    "recorded_commit": binding.published_commit,
+                    "actual_commit": source_commit,
+                },
+                suggestions=["检查外部提交后重新发布到新的目标分支"],
+            )
+
+        target_commit = self._git_output(["rev-parse", target])
+        merge_base = self._git_output(["merge-base", target_commit, source_commit])
+        target_status = self.status("main")
+        files = self._name_status(target_commit, source_commit)
+        return {
+            "enabled": True,
+            "lane": lane,
+            "source_branch": source_branch,
+            "source_commit": source_commit,
+            "target_branch": target,
+            "target_commit": target_commit,
+            "merge_base": merge_base,
+            "identical": target_commit == source_commit,
+            "can_fast_forward": self._is_ancestor(target_commit, source_commit),
+            "target_ahead": self._is_ancestor(source_commit, target_commit),
+            "target_changed_files": target_status["changed_files"],
+            "target_dirty": bool(target_status["changed_files"]),
+            "files": files,
+        }
+
+    def integrate(
+        self,
+        lane: str,
+        target_branch: Optional[str] = None,
+        *,
+        strategy: str = "merge",
+        conversation_entry_id: Optional[str] = None,
+    ) -> dict:
+        if strategy not in {"merge", "ff", "squash"}:
+            raise AgentError(
+                message=f"Unsupported integration strategy: {strategy}",
+                code=CODE_GIT_OPERATION_FAILED,
+            )
+
+        preview = self.integration_preview(lane, target_branch)
+        if not preview.get("enabled"):
+            return preview
+        if preview["target_dirty"]:
+            raise AgentError(
+                message="主目录存在未提交修改，不能执行代码集成",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={"changed_files": preview["target_changed_files"]},
+                suggestions=["先在 main Lane 保存检查点，或放弃未保存修改"],
+            )
+        if preview["identical"] or preview["target_ahead"]:
+            return {
+                **preview,
+                "strategy": strategy,
+                "status": "unchanged",
+                "action": "unchanged",
+                "integration_id": None,
+                "checkpoint": None,
+            }
+        if strategy == "ff" and not preview["can_fast_forward"]:
+            raise AgentError(
+                message="当前来源分支不能对目标分支执行快速前进",
+                code=CODE_GIT_OPERATION_FAILED,
+                details={
+                    "source_branch": preview["source_branch"],
+                    "target_branch": preview["target_branch"],
+                },
+                suggestions=["改用保留分支历史或压缩提交的集成策略"],
+            )
+
+        integration_id = f"int_{uuid.uuid4().hex[:12]}"
+        self._last_operation_id = integration_id
+        operation_details = {
+            "operation": "integrate_lane",
+            "integration_id": integration_id,
+            "lane": lane,
+            "source_lane": lane,
+            "source_branch": preview["source_branch"],
+            "source_commit": preview["source_commit"],
+            "target_branch": preview["target_branch"],
+            "target_before": preview["target_commit"],
+            "strategy": strategy,
+            "conversation_entry_id": conversation_entry_id,
+        }
+        self._record_operation(integration_id, "prepared", operation_details)
+        worktree = self.source_workspace
+        git_applied = False
+        target_after: Optional[str] = None
+        try:
+            if strategy == "ff":
+                args = ["merge", "--ff-only", "--no-edit", preview["source_branch"]]
+            elif strategy == "squash":
+                args = ["merge", "--squash", "--no-commit", preview["source_branch"]]
+            else:
+                args = ["merge", "--no-ff", "--no-edit", preview["source_branch"]]
+            result = self._git(
+                [
+                    "-c",
+                    f"core.hooksPath={self._disabled_hooks_dir()}",
+                    "-c",
+                    "user.name=CodeMate Integrator",
+                    "-c",
+                    "user.email=integrator@codemate.local",
+                    "-c",
+                    "commit.gpgSign=false",
+                    *args,
+                ],
+                cwd=worktree,
+                check=False,
+            )
+            if result.returncode != 0:
+                self._raise_git_error(result)
+            if strategy == "squash":
+                staged = self._git(
+                    ["diff", "--cached", "--quiet"], cwd=worktree, check=False
+                )
+                if staged.returncode != 0:
+                    self._git(
+                        [
+                            "-c",
+                            f"core.hooksPath={self._disabled_hooks_dir()}",
+                            "-c",
+                            "user.name=CodeMate Integrator",
+                            "-c",
+                            "user.email=integrator@codemate.local",
+                            "-c",
+                            "commit.gpgSign=false",
+                            "commit",
+                            "--no-verify",
+                            "-m",
+                            f"Integrate CodeMate Lane {lane} into {preview['target_branch']}",
+                        ],
+                        cwd=worktree,
+                    )
+            git_applied = True
+            target_after = self._git_output(["rev-parse", "HEAD"], cwd=worktree)
+            changed_files = self._name_status(preview["target_commit"], target_after)
+            checkpoint = CodeCheckpoint(
+                lane="main",
+                commit_sha=target_after,
+                previous_commit=preview["target_commit"],
+                reason="integrate_lane",
+                conversation_entry_id=conversation_entry_id,
+                changed_files=changed_files,
+                integration_id=integration_id,
+            )
+            self.store.append_checkpoint(checkpoint)
+            main_binding = self.get_binding("main")
+            main_binding.head_commit = target_after
+            main_binding.last_checkpoint_id = checkpoint.checkpoint_id
+            main_binding.sync_state = "clean"
+            main_binding.updated_at = time.time()
+            self.store.save_binding(main_binding)
+            completed = {
+                **operation_details,
+                "state": "completed",
+                "target_after": target_after,
+                "main_checkpoint_id": checkpoint.checkpoint_id,
+                "changed_files": changed_files,
+            }
+            self._record_operation(integration_id, "completed", completed)
+            return {
+                **preview,
+                "strategy": strategy,
+                "status": "completed",
+                "action": "integrated",
+                "integration_id": integration_id,
+                "target_after": target_after,
+                "checkpoint": checkpoint.to_dict(),
+            }
+        except Exception as exc:
+            conflicted_files = self._conflicted_paths(worktree)
+            if not git_applied:
+                self._git(["merge", "--abort"], cwd=worktree, check=False)
+                self._git(["reset", "--merge"], cwd=worktree, check=False)
+            failed = {
+                **operation_details,
+                "state": "failed",
+                "error": str(exc),
+                "target_after": target_after,
+                "conflicted_files": conflicted_files,
+            }
+            self._record_operation(integration_id, "failed", failed)
+            raise
+
+    def _conflicted_paths(self, worktree: Path) -> list[str]:
+        raw = self._git_output(
+            ["diff", "--name-only", "--diff-filter=U", "-z"],
+            cwd=worktree,
+        )
+        return sorted(item for item in raw.split("\0") if item)
+
     def restore_checkpoint(
         self, lane: str, checkpoint_id: str, *, discard_changes: bool = False
     ) -> dict:

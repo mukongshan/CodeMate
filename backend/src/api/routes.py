@@ -24,6 +24,7 @@ from .schemas import (
     CreateLaneIn,
     CreateSessionIn,
     CreateWorkspaceIn,
+    IntegrateLaneIn,
     PublishLaneIn,
     RenameIn,
     RenameLaneIn,
@@ -510,6 +511,51 @@ def publish_lane(
     return _require_session(manager, session_id).publish_lane(
         lane, body.target_branch, body.mode, body.base_branch
     )
+
+
+@router.get("/sessions/{session_id}/lanes/{lane}/integrate/preview")
+def preview_lane_integration(
+    session_id: str,
+    lane: str,
+    target_branch: str | None = Query(None),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    return _require_session(manager, session_id).integration_preview(
+        lane, target_branch
+    )
+
+
+@router.post("/sessions/{session_id}/lanes/{lane}/integrate")
+async def integrate_lane(
+    session_id: str,
+    lane: str,
+    body: IntegrateLaneIn,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    payload = runtime.integrate_lane(lane, body.target_branch, body.strategy)
+    if payload.get("status") == "completed":
+        checkpoint = payload.get("checkpoint") or {}
+        await runtime.emit(
+            "lane_code_integrated",
+            {
+                "lane": lane,
+                "source_branch": payload.get("source_branch"),
+                "target_branch": payload.get("target_branch"),
+                "strategy": payload.get("strategy", body.strategy),
+                "integration_id": payload.get("integration_id"),
+                "target_after": payload.get("target_after"),
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+            },
+        )
+    return payload
+
+
+@router.get("/sessions/{session_id}/integrations")
+def list_integrations(
+    session_id: str, manager: SessionManager = Depends(get_manager)
+) -> dict:
+    return {"integrations": _require_session(manager, session_id).integrations()}
 
 
 @router.post("/sessions/{session_id}/lanes/{lane}/archive")

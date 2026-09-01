@@ -152,6 +152,9 @@ npm run dev
 - `POST /api/sessions/{id}/lanes/{lane}/switch` - 切换分支
 - `DELETE /api/sessions/{id}/lanes/{lane}` - 删除分支
 - `GET /api/sessions/{id}/lanes/compare` - 对比分支
+- `GET /api/sessions/{id}/lanes/{lane}/integrate/preview` - 预览已发布分支集成
+- `POST /api/sessions/{id}/lanes/{lane}/integrate` - 将已发布分支集成到主目录当前分支
+- `GET /api/sessions/{id}/integrations` - 查询代码集成记录
 - `GET /api/sessions/{id}/permissions/gate` - 查看命令工具门禁
 - `PUT /api/sessions/{id}/permissions/gate` - 更新命令黑名单
 
@@ -254,7 +257,7 @@ DEBUG=true
 
 Git 增强模式下，`main` Lane 使用用户原始工作区，非 main Lane 使用外部托管目录中的独立 Worktree。main 的检查点直接提交到用户当前分支，非 main 的检查点提交到 `codemate/*` 托管分支；托管分支仍保存在用户代码仓库的 Git 对象库中，可通过 `git branch --list "codemate/*"` 查看。
 
-Lane 代码管理接口包括检查点保存/查询、指定检查点恢复、放弃未保存修改、发布为普通本地分支、归档和恢复 Lane。发布不会自动 checkout 用户原始工作区。
+Lane 代码管理接口包括检查点保存/查询、指定检查点恢复、放弃未保存修改、发布为普通本地分支、将已发布分支集成到主目录当前分支、查询集成记录、归档和恢复 Lane。发布不会自动 checkout 用户原始工作区；集成前会预览变更，集成成功后会在 main Lane 创建代码检查点并记录来源。
 
 日志存储在 `backend/logs/` 目录：
 - `agent.jsonl` - 结构化日志

@@ -142,6 +142,11 @@ class PublishLaneIn(BaseModel):
     base_branch: Optional[str] = None
 
 
+class IntegrateLaneIn(BaseModel):
+    target_branch: Optional[str] = None
+    strategy: Literal["merge", "ff", "squash"] = "merge"
+
+
 class UpdatePermissionGateIn(BaseModel):
     command_blacklist: list[str] = Field(default_factory=list)
 

@@ -5,19 +5,23 @@ import MessageBubble from './MessageBubble';
 import ToolCallCard from './ToolCallCard';
 import SubagentPanel from './SubagentPanel';
 import FileReviewPanel from './FileReviewPanel';
+import MemoryBudgetBar from './MemoryBudgetBar';
 import { getLaneConversation } from '../../utils/history';
 
 interface ConversationPanelProps {
   sendMessage: (content: string, lane?: string) => void;
   interruptRun: () => boolean;
+  compactSession?: (lane?: string) => Promise<boolean>;
 }
 
-export default function ConversationPanel({ sendMessage, interruptRun }: ConversationPanelProps) {
+export default function ConversationPanel({ sendMessage, interruptRun, compactSession }: ConversationPanelProps) {
+  const compact = compactSession || (async () => false);
   const {
     entries,
     lanes,
     messages,
     currentLane,
+    agentState,
     isRunning,
     toolCalls,
     runtimeError,
@@ -80,6 +84,19 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
     }
   }, [isRunning]);
 
+  const pendingToolCount = Array.from(toolCalls.values()).filter(
+    (call) => call.lane === currentLane && call.status === 'pending'
+  ).length;
+  const activityLabel = agentState === 'waiting_permission'
+    ? '等待你的确认'
+    : agentState === 'executing_tool'
+      ? pendingToolCount > 0 ? '正在等待工具结果' : '正在执行工具'
+      : agentState === 'calling_llm'
+        ? 'Agent 正在思考'
+        : agentState === 'preparing'
+          ? '正在整理上下文'
+          : '正在处理任务';
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const content = input.trim();
@@ -105,6 +122,8 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
 
   return (
     <div className="h-full flex flex-col bg-surface-1">
+      <MemoryBudgetBar compactSession={compact} />
+
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {runtimeError && (
@@ -170,6 +189,31 @@ export default function ConversationPanel({ sendMessage, interruptRun }: Convers
 
         <FileReviewPanel />
         <SubagentPanel />
+
+        {isRunning && (
+          <div className="mx-1 flex items-center gap-3 rounded-xl border border-accent/20 bg-accent/5 px-4 py-3 text-sm text-text-secondary shadow-sm">
+            <div className="relative flex h-6 w-6 flex-none items-center justify-center rounded-full bg-accent/10">
+              <span className="absolute h-3 w-3 rounded-full bg-accent/20 animate-ping" />
+              <span className="relative h-2 w-2 rounded-full bg-accent" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-text-primary">{activityLabel}</div>
+              <div className="mt-0.5 flex items-center gap-1 text-xs text-text-muted">
+                <span>请稍候</span>
+                <span className="flex gap-0.5" aria-label="Agent 正在运行">
+                  <span className="animate-bounce">·</span>
+                  <span className="animate-bounce [animation-delay:120ms]">·</span>
+                  <span className="animate-bounce [animation-delay:240ms]">·</span>
+                </span>
+              </div>
+            </div>
+            {pendingToolCount > 0 && (
+              <span className="rounded-full bg-surface-3 px-2 py-1 font-mono text-[10px] text-text-muted">
+                {pendingToolCount} 个工具
+              </span>
+            )}
+          </div>
+        )}
 
         <div ref={messagesEndRef} />
       </div>

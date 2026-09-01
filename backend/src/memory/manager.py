@@ -98,6 +98,25 @@ class MemoryManager:
     def estimated_tokens(self, lane: str) -> int:
         return sum(_message_tokens(message) for message in self.project_context(lane))
 
+    def budget_status(self, lane: str, estimated_tokens: int | None = None) -> dict[str, int | float]:
+        used_tokens = (
+            self.estimated_tokens(lane)
+            if estimated_tokens is None
+            else max(0, int(estimated_tokens))
+        )
+        threshold_tokens = min(
+            max(1, self.max_context_tokens - self.reserve_tokens),
+            max(1, int(self.max_context_tokens * self.threshold_ratio)),
+        )
+        return {
+            "used_tokens": used_tokens,
+            "max_tokens": self.max_context_tokens,
+            "reserve_tokens": self.reserve_tokens,
+            "threshold_tokens": threshold_tokens,
+            "remaining_tokens": max(0, self.max_context_tokens - used_tokens),
+            "utilization_ratio": round(used_tokens / self.max_context_tokens, 4),
+        }
+
     async def compact_if_needed(
         self, lane: str, *, reason: str = "threshold", force: bool = False
     ) -> dict[str, Any] | None:
@@ -107,8 +126,8 @@ class MemoryManager:
         effective = self.storage.get_context_entries(leaf_id)
         total_tokens = sum(_entry_tokens(entry) for entry in effective)
         threshold = min(
-            self.max_context_tokens - self.reserve_tokens,
-            int(self.max_context_tokens * self.threshold_ratio),
+            max(1, self.max_context_tokens - self.reserve_tokens),
+            max(1, int(self.max_context_tokens * self.threshold_ratio)),
         )
         if not force and total_tokens <= max(1, threshold):
             return None
@@ -190,6 +209,7 @@ class MemoryManager:
             "retained_count": len(retained),
             "covered_count": len(to_summarize),
             "usage": usage,
+            "memory": self.budget_status(lane),
         }
 
     async def _summarize(self, prompt: str) -> tuple[str, dict[str, int]]:

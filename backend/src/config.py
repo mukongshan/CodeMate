@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -181,8 +182,11 @@ def _int_env(name: str, default: int) -> int:
     if not raw:
         return default
     try:
-        return int(raw)
-    except ValueError:
+        value = Decimal(raw.strip())
+        if not value.is_finite() or value != value.to_integral_value():
+            return default
+        return int(value)
+    except (InvalidOperation, ValueError):
         return default
 
 

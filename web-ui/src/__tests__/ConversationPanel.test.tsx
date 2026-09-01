@@ -85,6 +85,67 @@ describe('ConversationPanel', () => {
     expect(screen.getByRole('button', { name: '中断中...' })).toBeDisabled();
   });
 
+  it('shows memory usage and tool wait activity while running', () => {
+    useStore.setState({
+      currentLane: 'main',
+      isRunning: true,
+      agentState: 'executing_tool',
+      memoryBudget: {
+        used_tokens: 7200,
+        max_tokens: 8000,
+        reserve_tokens: 2000,
+        threshold_tokens: 6400,
+        remaining_tokens: 800,
+        utilization_ratio: 0.9,
+      },
+      lanes: [],
+      entries: [],
+      messages: [],
+      toolCalls: new Map([
+        ['tool-1', { call_id: 'tool-1', tool_name: 'read_file', args: {}, status: 'pending', lane: 'main' }],
+      ]),
+    } as any);
+
+    render(<ConversationPanel sendMessage={vi.fn()} interruptRun={vi.fn(() => true)} />);
+
+    expect(screen.getByText('7,200 / 8,000 tokens')).toBeInTheDocument();
+    expect(screen.getByText('正在等待工具结果')).toBeInTheDocument();
+    expect(screen.getByLabelText('Agent 正在运行')).toBeInTheDocument();
+  });
+
+  it('triggers manual memory compaction while idle', async () => {
+    const compactSession = vi.fn(async () => true);
+    useStore.setState({
+      currentLane: 'main',
+      isRunning: false,
+      memoryBudget: {
+        used_tokens: 6500,
+        max_tokens: 8000,
+        reserve_tokens: 2000,
+        threshold_tokens: 6400,
+        remaining_tokens: 1500,
+        utilization_ratio: 0.8125,
+      },
+      lanes: [],
+      entries: [],
+      messages: [],
+      toolCalls: new Map(),
+    } as any);
+
+    const user = userEvent.setup();
+    render(
+      <ConversationPanel
+        sendMessage={vi.fn()}
+        interruptRun={vi.fn(() => true)}
+        compactSession={compactSession}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: '压缩记忆' }));
+
+    expect(compactSession).toHaveBeenCalledWith('main');
+  });
+
   it('does not render live messages from another lane', () => {
     useStore.setState({
       currentLane: 'feature-x',

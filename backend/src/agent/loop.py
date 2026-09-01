@@ -49,7 +49,6 @@ from .providers import (
     EphemeralMessageProvider,
     MessageProvider,
     TreeMessageProvider,
-    message_to_entry_content,
 )
 from .state import AgentState, RunContext, RunResult
 
@@ -282,11 +281,18 @@ class Agent:
                 "message_count": len(messages),
                 "total_tokens": estimated_tokens,
                 "compaction_status": compaction.get("status") if compaction else None,
+                "memory": (
+                    self.memory_manager.budget_status(ctx.lane, estimated_tokens)
+                    if self.memory_manager is not None
+                    else None
+                ),
             })
 
             text_parts: list[str] = []
             tool_calls: list[ToolCall] = []
             stop_reason = "stop"
+            reasoning_content: Optional[str] = None
+            partial_tool_calls = False
 
             message_id = f"{ctx.run_id}-{ctx.iteration}"
             await self._emit("message_start", {"message_id": message_id})
@@ -315,6 +321,8 @@ class Agent:
                         )
                     elif isinstance(event, DoneEvent):
                         stop_reason = event.stop_reason
+                        reasoning_content = event.reasoning_content
+                        partial_tool_calls = event.partial_tool_calls
                         ctx.total_tokens += int(event.usage.get("total_tokens") or 0)
                         # 记录 LLM 响应
                         await self._emit("llm_response", {
@@ -348,6 +356,66 @@ class Agent:
             assistant_text = "".join(text_parts)
             if assistant_text:
                 final_text = assistant_text
+
+            needs_continuation = partial_tool_calls or (
+                stop_reason == "length" and reasoning_content is not None and not tool_calls
+            )
+            if needs_continuation:
+                assistant_msg = Message(
+                    role="assistant",
+                    content=assistant_text or None,
+                    reasoning_content=reasoning_content,
+                )
+                node_id = await self._append_assistant(assistant_msg)
+                if node_id:
+                    final_id = node_id
+                    await self._emit(
+                        "node_added",
+                        {
+                            "id": node_id,
+                            "role": "assistant",
+                            "lane": ctx.lane,
+                            "message_id": message_id,
+                        },
+                    )
+                await self._emit(
+                    "message_end", {"message_id": message_id, "stop_reason": stop_reason}
+                )
+                if empty_response_retries < 1:
+                    empty_response_retries += 1
+                    retry_prompt = (
+                        "上一轮模型的工具调用参数因输出长度限制被截断，未执行。"
+                        "请重新完整输出工具调用，确保 JSON 参数闭合；不要重复说明计划。"
+                        if partial_tool_calls
+                        else "上一轮模型输出在思考阶段达到长度上限，未完成任务。"
+                        "请继续完成用户的原始任务，并在需要时完整调用工具。"
+                    )
+                    logger.warning(
+                        "模型输出被截断，尝试恢复（第 %d 次）",
+                        empty_response_retries,
+                    )
+                    await self._emit(
+                        "llm_retry",
+                        {
+                            "reason": (
+                                "truncated_tool_call"
+                                if partial_tool_calls
+                                else "reasoning_length"
+                            ),
+                            "attempt": empty_response_retries,
+                        },
+                    )
+                    continue
+                raise AgentError(
+                    message="模型输出被长度限制截断，未能完成本次任务",
+                    code=CODE_LLM_ERROR,
+                    details={
+                        "iteration": ctx.iteration,
+                        "stop_reason": stop_reason,
+                        "partial_tool_calls": partial_tool_calls,
+                    },
+                    suggestions=["请重试本次请求", "适当提高 max_tokens 配置"],
+                )
 
             if not assistant_text and not tool_calls:
                 await self._emit(
@@ -388,6 +456,7 @@ class Agent:
                 role="assistant",
                 content=assistant_text or None,
                 tool_calls=tool_calls or None,
+                reasoning_content=reasoning_content,
             )
             node_id = await self._append_assistant(assistant_msg)
             if node_id:
@@ -471,10 +540,6 @@ class Agent:
         return messages
 
     async def _append_assistant(self, message: Message) -> Optional[str]:
-        if isinstance(self.provider, TreeMessageProvider):
-            return await self.provider.append_entry(
-                role="assistant", content=message_to_entry_content(message)
-            )
         return await self.provider.append(message)
 
     async def _append_tool_results(

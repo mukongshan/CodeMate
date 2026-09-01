@@ -649,6 +649,59 @@ class TestGitLaneAPI:
         assert restore_lane.status_code == 200
         assert restore_lane.json()["archived"] is False
 
+    def test_published_lane_can_be_previewed_and_integrated(self, client, temp_dir):
+        repo = self._create_repo(temp_dir)
+        created = client.post(
+            "/api/sessions",
+            json={"session_id": "integration-api", "workspace": str(repo)},
+        )
+        assert created.status_code == 201
+
+        create_lane = client.post(
+            "/api/sessions/integration-api/lanes",
+            json={"name": "feature"},
+        )
+        assert create_lane.status_code == 201
+        feature_workspace = Path(create_lane.json()["git"]["workspace"])
+        (feature_workspace / "app.py").write_text("value = 'feature'\n", encoding="utf-8")
+        checkpoint = client.post(
+            "/api/sessions/integration-api/lanes/feature/checkpoint"
+        )
+        assert checkpoint.status_code == 200
+
+        publish = client.post(
+            "/api/sessions/integration-api/lanes/feature/publish",
+            json={"target_branch": "feature/result", "mode": "branch"},
+        )
+        assert publish.status_code == 200
+
+        switch_main = client.post(
+            "/api/sessions/integration-api/lanes/main/switch"
+        )
+        assert switch_main.status_code == 200
+        target_branch = self._git(repo, "symbolic-ref", "--short", "HEAD")
+        preview = client.get(
+            "/api/sessions/integration-api/lanes/feature/integrate/preview",
+            params={"target_branch": target_branch},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["source_branch"] == "feature/result"
+        assert preview.json()["target_dirty"] is False
+
+        integrate = client.post(
+            "/api/sessions/integration-api/lanes/feature/integrate",
+            json={"target_branch": target_branch, "strategy": "merge"},
+        )
+        assert integrate.status_code == 200
+        payload = integrate.json()
+        assert payload["status"] == "completed"
+        assert payload["checkpoint"]["lane"] == "main"
+        assert self._git(repo, "show", f"{target_branch}:app.py") == "value = 'feature'"
+
+        records = client.get("/api/sessions/integration-api/integrations")
+        assert records.status_code == 200
+        assert records.json()["integrations"][0]["integration_id"] == payload["integration_id"]
+
 
 class TestPermissionAPI:
     """测试权限审计 API。"""

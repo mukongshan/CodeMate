@@ -101,6 +101,24 @@ class StreamBuffer:
             )
         return result
 
+    def has_incomplete_tool_calls(self) -> bool:
+        """判断是否存在无法安全执行的工具调用片段。"""
+        for partial in self._partials.values():
+            if not partial.name:
+                return True
+
+            raw_args = partial.arguments.strip()
+            if not raw_args:
+                continue
+
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                return True
+            if not isinstance(parsed, dict):
+                return True
+        return False
+
     def clear(self) -> None:
         self.text = ""
         self._partials.clear()

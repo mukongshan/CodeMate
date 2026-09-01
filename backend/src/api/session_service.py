@@ -652,6 +652,33 @@ class SessionRuntime:
         self._cancel_checkpoint_flush(lane)
         return result
 
+    def integration_preview(
+        self, lane: str, target_branch: Optional[str] = None
+    ) -> dict:
+        self.lane_manager.get_lane(lane)
+        return self.git_manager.integration_preview(lane, target_branch)
+
+    def integrate_lane(
+        self,
+        lane: str,
+        target_branch: Optional[str] = None,
+        strategy: str = "merge",
+    ) -> dict:
+        self._ensure_no_active_run("集成 Lane 代码")
+        self.lane_manager.get_lane(lane)
+        main_entry_id = self.lane_manager.get_lane("main").leaf_id
+        result = self.git_manager.integrate(
+            lane,
+            target_branch,
+            strategy=strategy,
+            conversation_entry_id=main_entry_id,
+        )
+        self._cancel_checkpoint_flush("main")
+        return result
+
+    def integrations(self) -> list[dict]:
+        return self.git_manager.list_integrations()
+
     def archive_lane(self, lane: str) -> dict:
         self._ensure_no_active_run("归档 Lane")
         pointer = self.lane_manager.get_lane(lane)
@@ -681,6 +708,8 @@ class SessionRuntime:
     def snapshot(self) -> dict:
         """一次性返回前端渲染树所需的全部数据。"""
         lanes = self.lane_manager.list_active_lanes()
+        current_lane = self.lane_manager.current_lane
+        memory = self.memory_manager.budget_status(current_lane)
         return {
             "session_id": self.session_id,
             "workspace_id": self.workspace_id,
@@ -693,7 +722,9 @@ class SessionRuntime:
             if self.git_manager.repository_root
             else None,
             "pending_git_operations": self.git_manager.store.pending_operations(),
-            "current_lane": self.lane_manager.current_lane,
+            "integrations": self.git_manager.list_integrations(),
+            "current_lane": current_lane,
+            "memory": memory,
             "agent_state": self.state.value,
             "is_running": self.is_running,
             "command_blacklist": self.permission_manager.get_command_blacklist(),

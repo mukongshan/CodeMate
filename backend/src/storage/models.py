@@ -114,6 +114,7 @@ class Entry:
     timestamp: float = field(default_factory=time.time)
     entry_type: str = "message"
     metadata: dict[str, Any] = field(default_factory=dict)
+    reasoning_content: Optional[str] = None
 
     def to_jsonl_dict(self) -> dict:
         """序列化为 JSONL 一行的 dict。"""
@@ -131,6 +132,7 @@ class Entry:
             "timestamp": self.timestamp,
             "entry_type": self.entry_type,
             "metadata": self.metadata,
+            "reasoning_content": self.reasoning_content,
         }
 
     @staticmethod
@@ -163,6 +165,7 @@ class Entry:
             timestamp=float(data["timestamp"]),
             entry_type=str(data.get("entry_type", "message")),
             metadata=dict(data.get("metadata") or {}),
+            reasoning_content=data.get("reasoning_content"),
         )
 
     def text_preview(self, limit: int = 80) -> str:
