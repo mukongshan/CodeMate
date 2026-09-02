@@ -92,8 +92,7 @@ Desktop.ini
 
 # Submissions
 *.zip
-README.txt
-*.mp4
+
 
 # Build outputs
 *.out
