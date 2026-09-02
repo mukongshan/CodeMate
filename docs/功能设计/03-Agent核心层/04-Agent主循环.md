@@ -25,6 +25,52 @@
 
 ## 二、一次 run 的真实流程
 
+### 2.1 LLM—工具循环
+
+下面的图展示一次 `run` 内部最重要的循环。主 Agent 每次调用 LLM 前都会根据当前 Lane 重新构建上下文；LLM 返回工具调用后，工具结果会聚合成一条 `role=tool` 消息写回树，再进入下一次 LLM 调用。没有工具调用时，本轮直接收尾。
+
+```mermaid
+flowchart TD
+    Start([用户发送 send_message]) --> AppendUser[TreeMessageProvider 追加 user Entry\n更新当前 Lane leaf_id]
+    AppendUser --> Prepare[准备本轮上下文]
+    Prepare --> Compact{是否需要上下文压缩?}
+    Compact -->|是| WriteSummary[MemoryManager 写入 compaction Entry\n重新计算上下文预算]
+    Compact -->|否| BuildContext[TreeMessageProvider.get_context\n加入 system prompt 和工具 schema]
+    WriteSummary --> BuildContext
+    BuildContext --> CallLLM[LLMClient.chat\nProvider 流式请求]
+    CallLLM --> Stream{收到哪类 LLM 事件?}
+
+    Stream -->|TextDeltaEvent| EmitText[推送 text_delta\n累积本轮文本]
+    EmitText --> Stream
+
+    Stream -->|ToolCallEvent| CollectCall[收集完整工具调用\nStreamBuffer 已拼接参数]
+    CollectCall --> Stream
+
+    Stream -->|DoneEvent| AppendAssistant[追加 assistant Entry\n保存文本、工具调用和 reasoning]
+    Stream -->|ErrorEvent/异常| LLMError[转换为 LLMAPIError]
+
+    AppendAssistant --> HasTools{本轮是否有工具调用?}
+    HasTools -->|否| Completed([run_completed\n返回 completed])
+    HasTools -->|是| CheckPermission[PermissionManager 检查每个工具]
+    CheckPermission --> PermissionResult{权限结果}
+    PermissionResult -->|允许或自动放行| ExecuteTools[ToolRegistry 并行执行工具]
+    PermissionResult -->|需要确认| WaitPermission[等待 permission_response]
+    WaitPermission --> PermissionDecision{用户决策}
+    PermissionDecision -->|允许| ExecuteTools
+    PermissionDecision -->|拒绝| DeniedResult[生成 is_error=true 的 ToolResult]
+    ExecuteTools --> Aggregate[聚合全部工具结果]
+    DeniedResult --> Aggregate
+    Aggregate --> AppendTools[追加一条 role=tool Entry\n更新当前 Lane leaf_id]
+    AppendTools --> Limit{达到迭代上限或收到中断?}
+    Limit -->|否| Prepare
+    Limit -->|达到上限| Partial([run_completed\n返回 partial])
+    Limit -->|已中断| Aborted([run_completed\n返回 aborted])
+
+    LLMError --> RunError([run_error\n返回 error])
+```
+
+图中的 `TreeMessageProvider` 是父 Agent 的消息来源；子 Agent 使用 `EphemeralMessageProvider`，但仍复用同一套 LLM—工具循环。子 Agent 的中间消息不写入父 Session 的 Entry 树。
+
 ```text
 run_started
   -> preparing
@@ -49,7 +95,7 @@ run_error
 
 ---
 
-## 三、事件
+### 2.2 事件路径摘要
 
 Agent 主循环直接产生的核心事件如下：
 

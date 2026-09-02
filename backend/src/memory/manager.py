@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..agent.providers import entries_to_messages
+from ..agent.providers import entries_to_messages, entry_to_message, expand_tool_entry
 from ..llm.events import DoneEvent, Message, TextDeltaEvent
 from ..storage.models import Entry
 from ..storage.session_storage import estimate_tokens
@@ -34,14 +34,33 @@ SUMMARY_PROMPT = """请把下面的历史整理成可以让另一个编程 Agent
 
 
 def _message_tokens(message: Message) -> int:
-    payload = message.content or ""
+    payload = (message.content or "") + (message.reasoning_content or "")
     if message.tool_calls:
-        payload += json.dumps([call.arguments for call in message.tool_calls], ensure_ascii=False)
+        payload += json.dumps(
+            [
+                {
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                }
+                for call in message.tool_calls
+            ],
+            ensure_ascii=False,
+        )
+    if message.tool_call_id:
+        payload += message.tool_call_id
     return estimate_tokens(payload)
 
 
+def _entry_messages(entry: Entry) -> list[Message]:
+    """把一条 Entry 转成协议消息，但不做跨 Entry 的序列修复。"""
+    if entry.role == "tool":
+        return expand_tool_entry(entry)
+    return [entry_to_message(entry)]
+
+
 def _entry_tokens(entry: Entry) -> int:
-    return sum(_message_tokens(message) for message in entries_to_messages([entry]))
+    return sum(_message_tokens(message) for message in _entry_messages(entry))
 
 
 def _serialize(messages: list[Message]) -> str:

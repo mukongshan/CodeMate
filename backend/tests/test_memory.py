@@ -6,10 +6,10 @@ import pytest
 
 from src.agent.providers import entries_to_messages
 from src.llm.events import DoneEvent, Message, TextDeltaEvent
-from src.memory.manager import MemoryManager
+from src.memory.manager import MemoryManager, _entry_tokens, _message_tokens
 from src.memory.project import load_project_context
 from src.storage.lane_manager import LaneManager
-from src.storage.models import Entry
+from src.storage.models import Entry, TextBlock, ToolResultBlock, ToolUseBlock
 from src.storage.session_storage import SessionStorage
 
 
@@ -90,6 +90,58 @@ async def test_manual_compaction_can_run_below_threshold(tmp_path: Path):
     result = await manager.compact_if_needed("main", force=True, reason="manual")
     assert result["status"] == "noop"
     assert storage.get_entry("only").entry_type == "message"
+
+
+@pytest.mark.asyncio
+async def test_compaction_token_count_matches_tool_context(tmp_path: Path):
+    storage = SessionStorage("tool-memory-test", tmp_path)
+    lanes = LaneManager("tool-memory-test", tmp_path)
+    entries = [
+        Entry(id="user", role="user", content="执行任务"),
+        Entry(
+            id="assistant-tool",
+            role="assistant",
+            content=[
+                TextBlock(text="我先检查文件"),
+                ToolUseBlock(id="call-1", name="read_file", arguments={"path": "a.txt"}),
+            ],
+        ),
+        Entry(
+            id="tool-result",
+            role="tool",
+            content=[
+                ToolResultBlock(
+                    tool_call_id="call-1",
+                    content="file contents " * 200,
+                )
+            ],
+        ),
+        Entry(id="assistant-final", role="assistant", content="检查完成"),
+    ]
+    parent = None
+    for entry in entries:
+        entry.parent = parent
+        await storage.append_message(entry)
+        lanes.update_lane("main", entry.id)
+        parent = entry.id
+
+    effective = storage.get_context_entries(entries[-1].id)
+    entry_tokens = sum(_entry_tokens(entry) for entry in effective)
+    context_tokens = sum(
+        _message_tokens(message) for message in entries_to_messages(effective)
+    )
+    assert entry_tokens == context_tokens
+
+    manager = MemoryManager(
+        storage,
+        lanes,
+        FakeSummaryClient(),
+        tmp_path,
+        max_context_tokens=1000,
+        keep_recent_tokens=100,
+    )
+    result = await manager.compact_if_needed("main", force=True, reason="manual")
+    assert result["status"] == "completed"
 
 
 def test_project_context_loads_instruction_and_memory_files(tmp_path: Path):
