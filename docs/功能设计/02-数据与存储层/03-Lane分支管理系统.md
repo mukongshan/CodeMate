@@ -1,6 +1,8 @@
 # 03 - Lane 分支管理系统
 
-> 像 Git 一样管理对话分支
+> 当前实现基线：2026-09-02
+>
+> Lane 同时承载对话树指针和（Git 可用时）代码工作区绑定。纯对话语义仍由本文说明，代码生命周期见 [16-Lane 与 Git 融合分支管理方案](16-Lane与Git融合分支管理方案.md)。
 
 ---
 
@@ -115,12 +117,16 @@ def get_history_path(leaf_id):
 ```mermaid
 classDiagram
     class LanePointer {
-        +String lane : 分支名称
+        +String lane_id : 稳定身份
+        +String lane : 兼容 slug / Git 标识
         +String leaf_id : 当前指向的节点
         +int seq : 更新序列号
         +float timestamp : 最后更新时间
         +String created_from : 从哪个节点创建
         +String description : 分支描述
+        +String display_name : 展示名称
+        +String name_source : manual / auto / fallback
+        +bool archived : 是否归档
     }
 ```
 
@@ -133,10 +139,16 @@ classDiagram
 | `seq` | 更新序号（每次更新递增） | `1, 2, 3, ...` |
 | `created_from` | 从哪个节点创建的 | `"e2"` |
 | `description` | 分支描述 | `"尝试缓存优化"` |
+| `lane_id` | 稳定 Lane 身份；重命名时保持不变 | UUID |
+| `display_name` | 用户可读名称，可包含中文 | `缓存优化方案` |
+| `name_source` | 名称来源 | `manual` / `auto` / `fallback` |
+| `archived` | 是否归档 | `true` / `false` |
 
 ### 2.2 存储格式
 
-**文件路径**：`data/sessions/{session_id}_lanes.jsonl`
+**新文件路径**：`data/workspaces/{workspace_id}/sessions/{session_id}/lanes.jsonl`。
+
+旧版本的 `data/sessions/{session_id}_lanes.jsonl` 只由显式迁移器读取。
 
 **示例内容**：
 
