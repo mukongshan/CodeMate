@@ -3,12 +3,10 @@ import { useStore } from '../../store';
 import {
   ChevronDown,
   Plus,
-  GitCompare,
   LogOut,
   RefreshCw,
   ShieldCheck,
   Code2,
-  FolderOpen,
   Settings,
   Wifi,
   WifiOff,
@@ -23,6 +21,7 @@ import SessionManagerModal from '../modals/SessionManagerModal';
 export default function Toolbar() {
   const {
     sessionId,
+    sessionTitle,
     workspace,
     currentLane,
     lanes,
@@ -31,8 +30,6 @@ export default function Toolbar() {
     wsReconnecting,
     setSession,
     clearSession,
-    setShowCompareDrawer,
-    setShowWorkspaceFiles,
   } = useStore();
   const [showLaneDropdown, setShowLaneDropdown] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -85,6 +82,11 @@ export default function Toolbar() {
       {/* 左侧 */}
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex-none pr-1 text-base font-semibold tracking-tight">◈ CodeMate</div>
+        {sessionTitle && (
+          <div className="hidden max-w-52 truncate text-sm text-text-secondary md:block" title={sessionTitle}>
+            {sessionTitle}
+          </div>
+        )}
 
         <div className="mx-1 hidden h-5 w-px flex-none bg-border sm:block" />
 
@@ -98,7 +100,7 @@ export default function Toolbar() {
               className="h-2 w-2 rounded-full"
               style={{ backgroundColor: laneColors[activeLaneIndex % 4] }}
             />
-            <span className="text-sm font-medium">{currentLane}</span>
+            <span className="text-sm font-medium">{activeLane?.display_name || currentLane}</span>
             {activeLane?.git?.enabled && (
               <span
                 className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${
@@ -131,7 +133,7 @@ export default function Toolbar() {
                       className="h-2 w-2 flex-none rounded-full"
                       style={{ backgroundColor: laneColors[index % 4] }}
                     />
-                    <span className="flex-1 truncate text-left text-sm">{lane.lane}</span>
+                    <span className="flex-1 truncate text-left text-sm">{lane.display_name || lane.lane}</span>
                     {lane.lane === currentLane && (
                       <span className="text-xs text-status-success">✓</span>
                     )}
@@ -154,25 +156,6 @@ export default function Toolbar() {
             </>
           )}
         </div>
-
-        {/* 常用操作 */}
-        <button
-          onClick={() => setShowWorkspaceFiles(true)}
-          className="flex flex-none items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
-          title="浏览当前 Lane 工作区文件"
-        >
-          <FolderOpen className="h-4 w-4" />
-          <span className="hidden lg:inline">文件</span>
-        </button>
-
-        <button
-          onClick={() => setShowCompareDrawer(true)}
-          className="flex flex-none items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
-          title="对比分支代码差异"
-        >
-          <GitCompare className="h-4 w-4" />
-          <span className="hidden lg:inline">对比</span>
-        </button>
 
         {workspace && (
           <div

@@ -193,4 +193,36 @@ describe('useWebSocket', () => {
     expect(useStore.getState().wsReconnecting).toBe(true);
     expect(useStore.getState().runtimeError?.source).toBe('connection');
   });
+
+  it('updates automatic title silently without changing running state', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        session_id: 'session-1',
+        title: '原始标题',
+        current_lane: 'main',
+        agent_state: 'idle',
+        is_running: false,
+        lanes: [],
+        entries: [],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    renderHook(() => useWebSocket('session-1'));
+    const ws = FakeWebSocket.instances[0];
+    act(() => ws.open());
+    await waitFor(() => expect(useStore.getState().wsConnected).toBe(true));
+
+    act(() => {
+      ws.emit({
+        type: 'session_title_updated',
+        data: { title: '自动标题', source: 'auto', locked: false },
+      });
+    });
+
+    expect(useStore.getState().sessionTitle).toBe('自动标题');
+    expect(useStore.getState().isRunning).toBe(false);
+    expect(useStore.getState().toasts.some((toast) => toast.message.includes('自动标题'))).toBe(false);
+  });
 });

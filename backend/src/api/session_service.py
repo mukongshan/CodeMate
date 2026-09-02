@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -27,6 +28,7 @@ from ..agent.providers import TreeMessageProvider
 from ..agent.state import AgentState, RunResult
 from ..config import AppConfig
 from ..errors.types import AgentError
+from ..intelligence.naming import NamingService
 from ..llm.client import LLMClient
 from ..memory.manager import MemoryManager
 from ..memory.project import load_project_context
@@ -59,12 +61,18 @@ class SessionRuntime:
         paths: SessionPaths | None = None,
         workspace_id: str | None = None,
         title: str | None = None,
+        title_source: str = "default",
+        title_locked: bool = False,
+        title_updated_at: float | None = None,
     ) -> None:
         self.session_id = session_id
         self.config = config
         self.paths = paths
         self.workspace_id = workspace_id
         self.title = title or session_id
+        self.title_source = title_source or "default"
+        self.title_locked = bool(title_locked)
+        self.title_updated_at = title_updated_at
         self.storage = SessionStorage(
             session_id,
             config.data_dir,
@@ -103,6 +111,7 @@ class SessionRuntime:
             config={"command_blacklist": config.command_blacklist},
         )
         self.llm_client: LLMClient = LLMClient.from_config(config.llm.to_client_dict())
+        self.naming_service = NamingService(self.llm_client)
         self.memory_manager = MemoryManager(
             self.storage,
             self.lane_manager,
@@ -120,6 +129,8 @@ class SessionRuntime:
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self._active_run_task: Optional[asyncio.Task] = None
         self._active_run_id: Optional[str] = None
+        self._agent_run_finished = False
+        self._auto_title_task: Optional[asyncio.Task] = None
         self._interrupt_requested = False
         self._checkpoint_flush_tasks: dict[str, asyncio.Task] = {}
         self._pending_file_reviews: dict[str, dict] = {}
@@ -161,6 +172,9 @@ class SessionRuntime:
             payload.setdefault("parent_lane", event_lane)
         if event == "run_started":
             self._active_run_id = payload.get("run_id")
+            self._agent_run_finished = False
+        if event == "run_completed":
+            self._agent_run_finished = True
         if event == "status_update":
             try:
                 self.state = AgentState(payload.get("state", "idle"))
@@ -337,11 +351,15 @@ class SessionRuntime:
 
     @property
     def is_running(self) -> bool:
-        return self._run_lock.locked()
+        return (
+            self._active_run_task is not None
+            and not self._active_run_task.done()
+            and not self._agent_run_finished
+        )
 
     async def interrupt_run(self, run_id: Optional[str] = None) -> bool:
         task = self._active_run_task
-        if task is None or task.done() or self._interrupt_requested:
+        if task is None or task.done() or self._agent_run_finished or self._interrupt_requested:
             return False
         if run_id and self._active_run_id and run_id != self._active_run_id:
             return False
@@ -427,6 +445,7 @@ class SessionRuntime:
         if self._run_lock.locked():
             raise SessionBusyError("当前会话已有任务在执行，请等待完成")
 
+        result: RunResult
         async with self._run_lock:
             target_lane = lane or self.lane_manager.current_lane
             if target_lane != self.lane_manager.current_lane:
@@ -461,7 +480,78 @@ class SessionRuntime:
                 total_tokens=result.total_tokens,
                 duration=result.duration,
             )
-            return result
+        if result.status == "completed":
+            self._schedule_auto_title(user_message, result)
+        return result
+
+    def _schedule_auto_title(self, user_message: str, result: RunResult) -> None:
+        if self.title_locked or self.title_source != "default" or not user_message.strip():
+            return
+        if self._auto_title_task is not None and not self._auto_title_task.done():
+            return
+        task = asyncio.create_task(self._maybe_auto_title(user_message, result))
+        self._auto_title_task = task
+
+        def clear_task(completed_task: asyncio.Task) -> None:
+            if self._auto_title_task is completed_task:
+                self._auto_title_task = None
+
+        task.add_done_callback(clear_task)
+
+    async def _maybe_auto_title(self, user_message: str, result: RunResult) -> None:
+        if self.title_locked or self.title_source != "default" or not user_message.strip():
+            return
+        try:
+            title, source = await self.naming_service.suggest_session_title(
+                user_message, result.final_text
+            )
+            if self.title_locked or self.title_source != "default":
+                return
+            if not title:
+                return
+            self.title = title
+            self.title_source = source
+            self.title_locked = False
+            self.title_updated_at = time.time()
+            if self.paths is not None:
+                meta = self._read_session_meta()
+                meta.update(
+                    {
+                        "title": self.title,
+                        "title_source": self.title_source,
+                        "title_locked": self.title_locked,
+                        "title_updated_at": self.title_updated_at,
+                        "updated_at": self.title_updated_at,
+                    }
+                )
+                self._write_session_meta(meta)
+            await self.emit(
+                "session_title_updated",
+                {
+                    "title": self.title,
+                    "source": self.title_source,
+                    "locked": self.title_locked,
+                },
+            )
+        except Exception as exc:
+            logger.warning("automatic session title failed: %s", exc)
+
+    def _read_session_meta(self) -> dict:
+        if self.paths is None:
+            return {}
+        try:
+            payload = json.loads(self.paths.meta.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_session_meta(self, meta: dict) -> None:
+        if self.paths is None:
+            return
+        self.paths.ensure()
+        temporary = self.paths.meta.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self.paths.meta)
 
     async def _handle_completed_run_checkpoint(
         self, lane: str, result: RunResult
@@ -573,7 +663,7 @@ class SessionRuntime:
         task = asyncio.current_task()
         try:
             await asyncio.sleep(self.git_manager.checkpoint_merge_window_seconds)
-            while self.is_running:
+            while self._run_lock.locked():
                 await asyncio.sleep(0.25)
             pending = self.git_manager.pending_checkpoint_status(lane)
             if not pending["should_flush"]:
@@ -608,10 +698,16 @@ class SessionRuntime:
                 task.cancel()
         self._checkpoint_flush_tasks.clear()
 
+    def cancel_background_tasks(self) -> None:
+        task = self._auto_title_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._auto_title_task = None
+
     # --- Lane + Git coordination ------------------------------------------
 
     def _ensure_no_active_run(self, operation: str) -> None:
-        if self.is_running:
+        if self._run_lock.locked():
             raise AgentError(
                 message=f"Agent 正在运行，暂时不能{operation}",
                 code="SESSION_BUSY",
@@ -636,7 +732,12 @@ class SessionRuntime:
         return [self.lane_payload(item.lane) for item in lanes]
 
     def create_lane(
-        self, name: str, from_id: Optional[str], description: str = ""
+        self,
+        name: str,
+        from_id: Optional[str],
+        description: str = "",
+        display_name: Optional[str] = None,
+        name_source: str = "manual",
     ) -> dict:
         self._ensure_no_active_run("创建 Lane")
         self.lane_manager.validate_new_lane(name)
@@ -659,7 +760,11 @@ class SessionRuntime:
             git_created = True
         try:
             pointer = self.lane_manager.create_lane(
-                name=name, from_id=from_id, description=description
+                name=name,
+                from_id=from_id,
+                description=description,
+                display_name=display_name,
+                name_source=name_source,
             )
             self.lane_manager.switch_lane(name)
             self.permission_manager.set_workspace(self.workspace_for_lane(name))
@@ -669,6 +774,31 @@ class SessionRuntime:
                 self.git_manager.rollback_lane_creation(name)
             raise
         return self.lane_payload(pointer.lane)
+
+    async def suggest_lane_names(self, intent: str = "") -> dict:
+        current_lane = self.lane_manager.current_lane
+        current_pointer = self.lane_manager.get_lane(current_lane)
+        context_entries = (
+            self.storage.get_context_entries(current_pointer.leaf_id)
+            if current_pointer.leaf_id
+            else []
+        )
+        recent_context = [
+            f"{entry.role}: {entry.text_preview(400)}"
+            for entry in context_entries[-8:]
+            if entry.text_preview(400).strip()
+        ]
+        suggestions = await self.naming_service.suggest_lane_names(
+            session_title=self.title,
+            current_lane=current_lane,
+            recent_context=recent_context,
+            intent=(intent or "").strip(),
+            existing_names=[item.lane for item in self.lane_manager.list_lanes()],
+        )
+        return {
+            "current_lane": current_lane,
+            "suggestions": [item.to_dict() for item in suggestions],
+        }
 
     def switch_lane(self, lane: str, *, allow_during_run: bool = False) -> dict:
         if not allow_during_run:
@@ -865,6 +995,9 @@ class SessionRuntime:
             "session_id": self.session_id,
             "workspace_id": self.workspace_id,
             "title": self.title,
+            "title_source": self.title_source,
+            "title_locked": self.title_locked,
+            "title_updated_at": self.title_updated_at,
             "workspace": str(self.workspace_for_lane(self.lane_manager.current_lane)),
             "source_workspace": str(self.config.workspace),
             "git_enabled": self.git_manager.enabled,
@@ -923,6 +1056,9 @@ class SessionManager:
             "workspace": workspace_record.path,
             "workspace_title": workspace_record.title,
             "title": (title or sid).strip() or sid,
+            "title_source": "manual" if title and title.strip() else "default",
+            "title_locked": bool(title and title.strip()),
+            "title_updated_at": now if title and title.strip() else None,
             "created_at": now,
             "updated_at": now,
             "command_blacklist": list(self.config.command_blacklist),
@@ -999,6 +1135,7 @@ class SessionManager:
         try:
             if runtime is not None:
                 runtime.cancel_checkpoint_flushes()
+                runtime.cancel_background_tasks()
                 runtime.git_manager.delete_managed_resources()
                 self._sessions.pop(session_id, None)
             self.workspace_storage.write_deletion_journal(
@@ -1062,11 +1199,17 @@ class SessionManager:
             raise ValueError("会话名称不能为空")
         meta = self.workspace_storage.read_session_meta(paths)
         meta["title"] = normalized
+        meta["title_source"] = "manual"
+        meta["title_locked"] = True
+        meta["title_updated_at"] = time.time()
         meta["updated_at"] = time.time()
         self.workspace_storage.write_session_meta(paths, meta)
         runtime = self._sessions.get(session_id)
         if runtime is not None:
             runtime.title = normalized
+            runtime.title_source = "manual"
+            runtime.title_locked = True
+            runtime.title_updated_at = meta["title_updated_at"]
         workspace = self.workspace_storage.require_workspace(paths.workspace_id)
         return self._session_summary(workspace, paths, meta)
 
@@ -1124,6 +1267,9 @@ class SessionManager:
             paths=paths,
             workspace_id=workspace.workspace_id,
             title=str(meta.get("title") or paths.session_id),
+            title_source=str(meta.get("title_source") or "default"),
+            title_locked=bool(meta.get("title_locked", False)),
+            title_updated_at=meta.get("title_updated_at"),
         )
 
     def _workspace_payload(self, workspace: WorkspaceRecord) -> dict:
@@ -1140,6 +1286,8 @@ class SessionManager:
             "session_id": paths.session_id,
             "workspace_id": workspace.workspace_id,
             "title": str(meta.get("title") or paths.session_id),
+            "title_source": str(meta.get("title_source") or "default"),
+            "title_locked": bool(meta.get("title_locked", False)),
             "updated_at": max(
                 float(meta.get("updated_at", 0.0)),
                 self.workspace_storage.session_updated_at(paths),

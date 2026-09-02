@@ -8,6 +8,7 @@ export function useWebSocket(sessionId: string | null) {
 
   const {
     setSession,
+    setSessionTitle,
     setWsConnected,
     setWsReconnecting,
     setAgentState,
@@ -252,6 +253,10 @@ export function useWebSocket(sessionId: string | null) {
         void syncSessionSnapshot();
         break;
 
+      case 'session_title_updated':
+        setSessionTitle(data.title || '', data.source || 'auto', data.locked ?? false);
+        break;
+
       case 'run_interrupt_requested':
         break;
 
@@ -275,7 +280,7 @@ export function useWebSocket(sessionId: string | null) {
         break;
 
       case 'lane_created':
-        addToast({ type: 'success', message: `Created lane ${data.lane}` });
+        addToast({ type: 'success', message: `Created lane ${data.display_name || data.lane}` });
         void syncSessionSnapshot();
         break;
 

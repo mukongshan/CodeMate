@@ -13,6 +13,7 @@ from src.config import AppConfig
 from src.api import routes as api_routes
 from src.api.ws import _handle_message
 from src.tools.file_tools import EditFileTool, WriteFileTool
+from src.intelligence.naming import LaneNameSuggestion
 
 
 @pytest.fixture
@@ -75,6 +76,41 @@ class TestSessionAPI:
         assert "session_id" in data
         assert "current_lane" in data
         assert data["current_lane"] == "main"
+
+    def test_auto_title_is_persisted_and_emitted(self, test_app):
+        runtime = test_app.state.session_manager.create("auto-title")
+        events = []
+
+        async def emit(event, payload):
+            events.append((event, payload))
+
+        class StubNamingService:
+            async def suggest_session_title(self, user_message, final_text=""):
+                return "缓存优化", "auto"
+
+        runtime.set_emitter(emit, "test-title")
+        runtime.naming_service = StubNamingService()
+        asyncio.run(runtime._maybe_auto_title("优化缓存命中率", SimpleNamespace(final_text="完成")))
+
+        assert runtime.title == "缓存优化"
+        assert runtime.title_source == "auto"
+        assert any(event == "session_title_updated" for event, _ in events)
+        meta = test_app.state.session_manager.workspace_storage.read_session_meta(runtime.paths)
+        assert meta["title"] == "缓存优化"
+        assert meta["title_locked"] is False
+
+        test_app.state.session_manager.rename_session("auto-title", "手动标题")
+        assert runtime.title_locked is True
+        assert runtime.title_source == "manual"
+
+    def test_is_running_only_tracks_interruptible_agent_task(self, test_app):
+        runtime = test_app.state.session_manager.create("running-state")
+
+        async def check_state():
+            async with runtime._run_lock:
+                assert runtime.is_running is False
+
+        asyncio.run(check_state())
 
     def test_create_session_with_id(self, client):
         """测试创建指定 ID 的会话。"""
@@ -445,6 +481,29 @@ class TestLaneAPI:
         assert "current_lane" in data
         assert "lanes" in data
         assert len(data["lanes"]) >= 1  # 至少有 main
+
+    def test_lane_suggestions_endpoint(self, client, test_app, session_id):
+        runtime = test_app.state.session_manager.get(session_id)
+
+        class StubNamingService:
+            async def suggest_lane_names(self, **kwargs):
+                return [LaneNameSuggestion("cache-v2", "缓存优化", "尝试新的缓存策略")]
+
+        runtime.naming_service = StubNamingService()
+        response = client.post(
+            f"/api/sessions/{session_id}/lanes/suggestions",
+            json={"intent": "优化缓存"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["suggestions"] == [
+            {
+                "name": "cache-v2",
+                "display_name": "缓存优化",
+                "description": "尝试新的缓存策略",
+                "source": "auto",
+            }
+        ]
 
     def test_create_lane(self, client, session_id):
         """测试创建新分支。"""

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from src.api.workspace_files import read_file, restore_file, write_file
+from src.api.workspace_files import read_file, restore_file, search_workspace, write_file
 from src.tools.file_tools import EditFileTool
 from src.version_control.manager import GitLaneManager
 
@@ -56,6 +56,24 @@ def test_editor_save_rejects_git_metadata_and_binary_files(tmp_path: Path):
     with pytest.raises(HTTPException) as binary_error:
         write_file(tmp_path, "binary.dat", "text")
     assert binary_error.value.status_code == 400
+
+
+def test_workspace_search_matches_names_and_content_without_git_metadata(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text("const Ready = true;\nneedle here\n", encoding="utf-8")
+    (tmp_path / "needle.txt").write_text("other\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("needle\n", encoding="utf-8")
+
+    result = search_workspace(tmp_path, "needle")
+
+    assert result["files_matched"] == 2
+    assert {item["path"] for item in result["results"]} == {"src/app.ts", "needle.txt"}
+    assert any(item["path"] == "src/app.ts" and item["line"] == 2 for item in result["results"])
+
+    with pytest.raises(HTTPException) as metadata_error:
+        search_workspace(tmp_path, "needle", ".git")
+    assert metadata_error.value.status_code == 403
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ describe('CreateLaneModal', () => {
     const user = userEvent.setup();
     render(<CreateLaneModal onClose={onClose} />);
 
-    await user.type(screen.getByRole('textbox'), 'feature-x');
+    await user.type(screen.getByLabelText('分支名称'), 'feature-x');
     await user.click(screen.getByRole('button', { name: '创建分支' }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -37,5 +37,52 @@ describe('CreateLaneModal', () => {
       })
     );
     expect(useStore.getState().toasts.at(-1)?.message).toContain('feature-x');
+  });
+
+  it('requests suggestions and submits selected display metadata', async () => {
+    const onClose = vi.fn();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          suggestions: [{
+            name: 'cache-v2',
+            display_name: '缓存优化',
+            description: '尝试更高命中率',
+            source: 'auto',
+          }],
+        }),
+      })
+      .mockResolvedValue({ ok: true, json: async () => ({ lanes: [] }) });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    useStore.setState({
+      sessionId: 'session-2',
+      currentLane: 'main',
+      lanes: [
+        { lane: 'main', leaf_id: 'node-main', seq: 1, timestamp: 1, created_from: null, description: '' },
+      ],
+    } as any);
+
+    const user = userEvent.setup();
+    render(<CreateLaneModal onClose={onClose} />);
+    await user.type(screen.getByLabelText('方案意图（可选）'), '优化缓存');
+    await user.click(screen.getByRole('button', { name: '智能建议' }));
+    await user.click(await screen.findByRole('button', { name: /缓存优化/ }));
+    await user.click(screen.getByRole('button', { name: '创建分支' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/session-2/lanes',
+      expect.objectContaining({
+        body: JSON.stringify({
+          name: 'cache-v2',
+          from_id: 'node-main',
+          display_name: '缓存优化',
+          description: '尝试更高命中率',
+          name_source: 'auto',
+        }),
+      })
+    );
   });
 });

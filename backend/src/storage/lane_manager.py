@@ -96,7 +96,14 @@ class LaneManager:
         # 此时树还是空的，第一条消息 append 后才有落脚点。
         if MAIN_LANE not in self._lanes:
             self._append(
-                LanePointer(lane=MAIN_LANE, leaf_id=None, seq=1, description="主分支")
+                LanePointer(
+                    lane=MAIN_LANE,
+                    leaf_id=None,
+                    seq=1,
+                    description="主分支",
+                    display_name="主分支",
+                    name_source="manual",
+                )
             )
 
     # --- 加载 ---------------------------------------------------------------
@@ -192,7 +199,12 @@ class LaneManager:
             )
 
     def create_lane(
-        self, name: str, from_id: Optional[str], description: str = ""
+        self,
+        name: str,
+        from_id: Optional[str],
+        description: str = "",
+        display_name: Optional[str] = None,
+        name_source: str = "manual",
     ) -> LanePointer:
         """从指定节点创建新分支（03 号文档 3.1 节）。
 
@@ -206,6 +218,8 @@ class LaneManager:
             seq=1,
             created_from=from_id,
             description=description,
+            display_name=(display_name or name).strip()[:80] or name,
+            name_source=name_source if name_source in {"manual", "auto", "fallback"} else "manual",
         )
         self._append(pointer)
         return pointer
@@ -224,6 +238,8 @@ class LaneManager:
             lane_id=prev.lane_id,
             created_from=prev.created_from,
             description=prev.description,
+            display_name=prev.display_name,
+            name_source=prev.name_source,
             archived=prev.archived,
         )
         self._append(pointer)
@@ -276,6 +292,8 @@ class LaneManager:
             lane_id=pointer.lane_id,
             created_from=pointer.created_from,
             description=pointer.description,
+            display_name=pointer.display_name,
+            name_source=pointer.name_source,
             archived=True,
         )
         self._append(archived)
@@ -292,6 +310,8 @@ class LaneManager:
             lane_id=pointer.lane_id,
             created_from=pointer.created_from,
             description=pointer.description,
+            display_name=pointer.display_name,
+            name_source=pointer.name_source,
             archived=False,
         )
         self._append(restored)
@@ -311,6 +331,8 @@ class LaneManager:
             lane_id=pointer.lane_id,
             created_from=pointer.created_from,
             description=pointer.description,
+            display_name=pointer.display_name if pointer.display_name != pointer.lane else new_name,
+            name_source=pointer.name_source,
             archived=pointer.archived,
         )
         del self._lanes[name]

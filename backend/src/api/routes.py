@@ -27,6 +27,7 @@ from .schemas import (
     GitCommitIn,
     GitPathsIn,
     IntegrateLaneIn,
+    LaneSuggestionsIn,
     PublishLaneIn,
     RenameIn,
     RenameLaneIn,
@@ -35,7 +36,7 @@ from .schemas import (
     WriteWorkspaceFileIn,
 )
 from .session_service import SessionBusyError, SessionManager, SessionRuntime
-from .workspace_files import list_directory, read_file, write_file
+from .workspace_files import list_directory, read_file, search_workspace, write_file
 
 router = APIRouter(prefix="/api")
 
@@ -169,6 +170,8 @@ def _session_created_payload(runtime: SessionRuntime) -> dict:
         "session_id": runtime.session_id,
         "workspace_id": runtime.workspace_id,
         "title": runtime.title,
+        "title_source": runtime.title_source,
+        "title_locked": runtime.title_locked,
         "workspace": str(
             runtime.workspace_for_lane(runtime.lane_manager.current_lane)
         ),
@@ -196,14 +199,19 @@ def get_session(session_id: str, manager: SessionManager = Depends(get_manager))
 
 
 @router.patch("/sessions/{session_id}")
-def rename_session(
+async def rename_session(
     session_id: str,
     body: RenameIn,
     manager: SessionManager = Depends(get_manager),
 ) -> dict:
-    _require_session(manager, session_id)
+    runtime = _require_session(manager, session_id)
     try:
-        return {"session": manager.rename_session(session_id, body.title)}
+        session = manager.rename_session(session_id, body.title)
+        await runtime.emit(
+            "session_title_updated",
+            {"title": runtime.title, "source": "manual", "locked": True},
+        )
+        return {"session": session}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -302,6 +310,22 @@ def read_workspace_file(
     return payload
 
 
+@router.get("/sessions/{session_id}/workspace/search")
+def search_workspace_files(
+    session_id: str,
+    query: str = Query(..., min_length=1, description="文件名或文件内容关键词"),
+    path: str = Query(default="", description="当前工作区内的相对目录路径"),
+    case_sensitive: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=200),
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    workspace = runtime.workspace_for_lane(runtime.lane_manager.current_lane)
+    payload = search_workspace(workspace, query, path, case_sensitive=case_sensitive, limit=limit)
+    payload["lane"] = runtime.lane_manager.current_lane
+    return payload
+
+
 @router.post("/sessions/{session_id}/workspace/file")
 def write_workspace_file(
     session_id: str,
@@ -383,6 +407,16 @@ def list_lanes(
     }
 
 
+@router.post("/sessions/{session_id}/lanes/suggestions")
+async def suggest_lane_names(
+    session_id: str,
+    body: LaneSuggestionsIn | None = None,
+    manager: SessionManager = Depends(get_manager),
+) -> dict:
+    runtime = _require_session(manager, session_id)
+    return await runtime.suggest_lane_names(body.intent if body else "")
+
+
 @router.post("/sessions/{session_id}/lanes", status_code=201)
 async def create_lane(
     session_id: str,
@@ -397,12 +431,17 @@ async def create_lane(
         name=body.name,
         from_id=from_id,
         description=body.description or "",
+        display_name=body.display_name,
+        name_source=body.name_source,
     )
     await runtime.emit(
         "lane_created",
         {
             "lane": payload["lane"],
             "from_id": payload["created_from"],
+            "display_name": payload.get("display_name", payload["lane"]),
+            "description": payload.get("description", ""),
+            "name_source": payload.get("name_source", "manual"),
             "workspace": payload["git"].get("workspace"),
         },
     )
@@ -410,6 +449,7 @@ async def create_lane(
         "lane_switched",
         {
             "lane": payload["lane"],
+            "display_name": payload.get("display_name", payload["lane"]),
             "leaf_id": payload["leaf_id"],
             "workspace": payload["git"].get("workspace"),
         },
@@ -444,7 +484,12 @@ async def rename_lane(
     runtime = _require_session(manager, session_id)
     payload = runtime.rename_lane(lane, body.name)
     await runtime.emit(
-        "lane_renamed", {"lane": lane, "new_lane": payload["lane"]}
+        "lane_renamed",
+        {
+            "lane": lane,
+            "new_lane": payload["lane"],
+            "display_name": payload.get("display_name", payload["lane"]),
+        },
     )
     return payload
 

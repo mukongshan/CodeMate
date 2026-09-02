@@ -19,6 +19,9 @@ import type {
 interface AppState {
   // Session 相关
   sessionId: string | null;
+  sessionTitle: string;
+  sessionTitleSource: string;
+  sessionTitleLocked: boolean;
   workspaceId: string | null;
   workspace: string;
   commandBlacklist: string[];
@@ -70,6 +73,7 @@ interface AppState {
 
   // Actions
   setSession: (sessionId: string, data: any) => void;
+  setSessionTitle: (title: string, source?: string, locked?: boolean) => void;
   clearSession: () => void;
   setCurrentLane: (lane: string) => void;
   setAgentState: (state: AgentState) => void;
@@ -133,6 +137,9 @@ interface AppState {
 export const useStore = create<AppState>((set) => ({
   // 初始状态
   sessionId: null,
+  sessionTitle: '',
+  sessionTitleSource: 'default',
+  sessionTitleLocked: false,
   workspaceId: null,
   workspace: '',
   commandBlacklist: [],
@@ -192,6 +199,9 @@ export const useStore = create<AppState>((set) => ({
       const resetTransient = !sameSession || laneChanged;
       return {
         sessionId,
+        sessionTitle: data.title || state.sessionTitle || sessionId,
+        sessionTitleSource: data.title_source || state.sessionTitleSource,
+        sessionTitleLocked: data.title_locked ?? state.sessionTitleLocked,
         workspaceId: data.workspace_id ?? state.workspaceId,
         workspace: data.workspace || '',
         commandBlacklist: data.command_blacklist || [],
@@ -217,6 +227,9 @@ export const useStore = create<AppState>((set) => ({
   clearSession: () =>
     set({
       sessionId: null,
+      sessionTitle: '',
+      sessionTitleSource: 'default',
+      sessionTitleLocked: false,
       workspaceId: null,
       workspace: '',
       commandBlacklist: [],
@@ -277,6 +290,8 @@ export const useStore = create<AppState>((set) => ({
             runtimeError: null,
           }
     ),
+  setSessionTitle: (title, source = 'auto', locked = false) =>
+    set({ sessionTitle: title, sessionTitleSource: source, sessionTitleLocked: locked }),
   setAgentState: (state) => set({ agentState: state }),
   setIsRunning: (running) => set({ isRunning: running }),
   setMemoryBudget: (budget) =>

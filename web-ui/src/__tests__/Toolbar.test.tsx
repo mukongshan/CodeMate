@@ -5,7 +5,7 @@ import Toolbar from '../components/toolbar/Toolbar';
 import { useStore } from '../store';
 
 describe('Toolbar', () => {
-  it('switches lanes and opens compare drawer', async () => {
+  it('switches lanes and keeps the top bar focused on session status', async () => {
     const snapshot = {
       session_id: 'session-1',
       workspace: 'D:/work',
@@ -48,8 +48,8 @@ describe('Toolbar', () => {
       expect.objectContaining({ method: 'POST' })
     );
 
-    await user.click(screen.getByRole('button', { name: '对比' }));
-    expect(useStore.getState().showCompareDrawer).toBe(true);
+    expect(screen.queryByRole('button', { name: '文件' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '对比' })).not.toBeInTheDocument();
     expect(screen.getByText('重连中')).toBeInTheDocument();
   });
 });

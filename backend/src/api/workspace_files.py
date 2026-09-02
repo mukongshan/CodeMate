@@ -11,6 +11,9 @@ from fastapi import HTTPException
 
 MAX_VIEW_FILE_SIZE = 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 500
+MAX_SEARCH_RESULTS = 200
+MAX_SEARCH_FILE_SIZE = 512 * 1024
+_SEARCH_IGNORED_DIRS = frozenset({'.git', '.hg', '.svn', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.nuxt', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.idea', '.vscode', 'target', 'coverage', '.tox'})
 _ENCODING_CANDIDATES = ("utf-8", "utf-8-sig", "gbk", "latin-1")
 
 
@@ -158,6 +161,82 @@ def read_file(workspace: Path | str, relative_path: str = "") -> dict:
         "size": size,
         "lines": len(content.splitlines()),
         "revision": _revision(raw),
+        "workspace": str(root),
+    }
+
+
+def search_workspace(
+    workspace: Path | str,
+    query: str,
+    relative_path: str = "",
+    *,
+    case_sensitive: bool = False,
+    limit: int = MAX_SEARCH_RESULTS,
+) -> dict:
+    """在当前 Lane 工作区中搜索文件名和文本内容。"""
+    raw_query = query.strip()
+    if not raw_query:
+        raise _path_error("搜索内容不能为空")
+    root, target = _resolve_inside_workspace(workspace, relative_path)
+    if ".git" in target.relative_to(root).parts:
+        raise _path_error("不允许搜索 Git 元数据", 403)
+    if not target.exists():
+        raise _path_error("搜索路径不存在", 404)
+    if target.is_file():
+        files = [target]
+    elif target.is_dir():
+        files = [
+            path
+            for path in target.rglob("*")
+            if path.is_file()
+            and not any(part in _SEARCH_IGNORED_DIRS for part in path.relative_to(root).parts)
+        ]
+    else:
+        files = []
+
+    needle = raw_query if case_sensitive else raw_query.casefold()
+    results: list[dict] = []
+    files_matched: set[str] = set()
+    truncated = False
+    for file_path in files:
+        try:
+            if file_path.stat().st_size > MAX_SEARCH_FILE_SIZE:
+                continue
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw[:8192]:
+            continue
+        text, encoding = _decode(raw)
+        if text is None:
+            continue
+        relative = _relative_path(file_path, root)
+        comparable_name = file_path.name if case_sensitive else file_path.name.casefold()
+        if needle in comparable_name:
+            results.append({"path": relative, "line": None, "preview": file_path.name, "match_type": "filename"})
+            files_matched.add(relative)
+            if len(results) >= max(1, min(limit, MAX_SEARCH_RESULTS)):
+                truncated = True
+                break
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            comparable_line = line if case_sensitive else line.casefold()
+            if needle not in comparable_line:
+                continue
+            results.append({"path": relative, "line": line_number, "preview": line.strip() or line, "match_type": "content", "encoding": encoding})
+            files_matched.add(relative)
+            if len(results) >= max(1, min(limit, MAX_SEARCH_RESULTS)):
+                truncated = True
+                break
+        if truncated:
+            break
+
+    return {
+        "query": raw_query,
+        "path": _relative_path(target, root),
+        "results": results,
+        "total": len(results),
+        "files_matched": len(files_matched),
+        "truncated": truncated,
         "workspace": str(root),
     }
 

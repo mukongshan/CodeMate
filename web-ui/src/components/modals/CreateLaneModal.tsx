@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
+import type { LaneNameSuggestion } from '../../types';
 import { X } from 'lucide-react';
 
 interface CreateLaneModalProps {
@@ -9,6 +10,11 @@ interface CreateLaneModalProps {
 export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
   const { sessionId, lanes, currentLane, setSession, addToast } = useStore();
   const [name, setName] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [description, setDescription] = useState('');
+  const [nameSource, setNameSource] = useState<'manual' | 'auto' | 'fallback'>('manual');
+  const [suggestions, setSuggestions] = useState<LaneNameSuggestion[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const currentLanePointer = lanes.find(l => l.lane === currentLane);
@@ -18,8 +24,11 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
     if (!value) {
       return '分支名称不能为空';
     }
-    if (!/^[a-z0-9-]+$/.test(value)) {
-      return '仅限小写字母、数字、连字符';
+    if (value.length > 64) {
+      return '分支名称不能超过 64 个字符';
+    }
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+      return '仅限小写字母、数字，并使用单个连字符分隔';
     }
     if (value === 'main') {
       return 'main 是保留名称';
@@ -30,8 +39,43 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
     return null;
   };
 
+  const handleSuggest = async () => {
+    if (!sessionId) return;
+    setSuggesting(true);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/lanes/suggestions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intent: description }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSuggestions(data.suggestions || []);
+        if (!data.suggestions?.length) {
+          addToast({ type: 'info', message: '暂时没有可用的命名建议' });
+        }
+      } else {
+        addToast({ type: 'warning', message: data.detail || '暂时无法生成建议' });
+      }
+    } catch (requestError) {
+      console.error('Failed to suggest lane names:', requestError);
+      addToast({ type: 'warning', message: '暂时无法生成建议，可手动输入' });
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const applySuggestion = (suggestion: LaneNameSuggestion) => {
+    setName(suggestion.name);
+    setDisplayName(suggestion.display_name);
+    setDescription(suggestion.description);
+    setNameSource(suggestion.source === 'fallback' ? 'fallback' : 'auto');
+    setError('');
+  };
+
   const handleNameChange = (value: string) => {
     setName(value);
+    setNameSource('manual');
     const err = validateName(value);
     setError(err || '');
   };
@@ -53,6 +97,9 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
         body: JSON.stringify({
           name,
           from_id: fromId,
+          ...(displayName ? { display_name: displayName } : {}),
+          ...(description ? { description } : {}),
+          ...(nameSource !== 'manual' ? { name_source: nameSource } : {}),
         }),
       });
 
@@ -95,6 +142,7 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
           <div>
             <label className="block text-sm font-medium mb-2">分支名称</label>
             <input
+              aria-label="分支名称"
               type="text"
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
@@ -107,6 +155,67 @@ export default function CreateLaneModal({ onClose }: CreateLaneModalProps) {
             ) : (
               <div className="mt-1 text-xs text-status-success">
                 ✓ 仅限小写字母、数字、连字符
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2" htmlFor="lane-display-name">
+              展示名称（可选）
+            </label>
+            <input
+              id="lane-display-name"
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="例如：缓存优化方案"
+              maxLength={80}
+              className="w-full px-3 py-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
+            />
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <label className="block text-sm font-medium" htmlFor="lane-description">
+                方案意图（可选）
+              </label>
+              <button
+                type="button"
+                onClick={handleSuggest}
+                disabled={suggesting}
+                className="rounded-md border border-accent px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+              >
+                {suggesting ? '生成中...' : '智能建议'}
+              </button>
+            </div>
+            <textarea
+              id="lane-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="描述这个 Lane 要验证的方案，智能建议会参考它"
+              maxLength={240}
+              rows={3}
+              className="w-full resize-none px-3 py-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-accent"
+            />
+            {suggestions.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                <div className="text-xs text-text-muted">选择一个候选后仍可继续编辑：</div>
+                {suggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion.name}
+                    onClick={() => applySuggestion(suggestion)}
+                    className="block w-full rounded-md border border-border bg-surface-1 px-3 py-2 text-left transition-colors hover:bg-surface-3"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span className="font-medium">{suggestion.display_name}</span>
+                      <span className="font-mono text-xs text-text-muted">{suggestion.name}</span>
+                    </div>
+                    {suggestion.description && (
+                      <div className="mt-1 truncate text-xs text-text-secondary">{suggestion.description}</div>
+                    )}
+                  </button>
+                ))}
               </div>
             )}
           </div>

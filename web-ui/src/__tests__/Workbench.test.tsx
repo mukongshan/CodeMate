@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ActivityBar from '../components/workbench/ActivityBar';
+import { SearchPanel } from '../components/workbench/WorkbenchPanels';
 import { useStore } from '../store';
 import { resetStore } from '../test/test-utils';
 
@@ -34,5 +35,24 @@ describe('Workbench activity bar', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭终端' }));
 
     expect(useStore.getState().terminalOpen).toBe(false);
+  });
+
+  it('searches the current workspace and shows matching files', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        results: [{ path: 'src/app.ts', line: 4, preview: 'const needle = true;', match_type: 'content' }],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useStore.setState({ sessionId: 'session-1' });
+
+    render(<SearchPanel />);
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索文件名或内容' }), { target: { value: 'needle' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+
+    expect(await screen.findByText('src/app.ts')).toBeInTheDocument();
+    expect(screen.getByText('第 4 行')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/workspace/search?')));
   });
 });

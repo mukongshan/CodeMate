@@ -34,6 +34,8 @@ export interface LanePointer {
   timestamp: number;
   created_from: string | null;
   description: string;
+  display_name?: string;
+  name_source?: 'manual' | 'auto' | 'fallback' | string;
   archived?: boolean;
   git?: LaneGitState;
 }
@@ -231,6 +233,10 @@ export interface MemoryBudget {
 
 export interface SessionSnapshot {
   session_id: string;
+  title?: string;
+  title_source?: 'default' | 'manual' | 'auto' | 'fallback' | string;
+  title_locked?: boolean;
+  title_updated_at?: number | null;
   workspace: string;
   source_workspace?: string;
   git_enabled?: boolean;
@@ -244,6 +250,13 @@ export interface SessionSnapshot {
   integrations?: CodeIntegration[];
   entries: Entry[];
   memory?: MemoryBudget;
+}
+
+export interface LaneNameSuggestion {
+  name: string;
+  display_name: string;
+  description: string;
+  source?: 'auto' | 'fallback' | string;
 }
 
 // 工具调用状态

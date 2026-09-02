@@ -123,7 +123,13 @@ class RenameLaneIn(BaseModel):
 class CreateLaneIn(BaseModel):
     name: str
     from_id: Optional[str] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=240)
+    display_name: Optional[str] = Field(default=None, max_length=80)
+    name_source: Literal["manual", "auto", "fallback"] = "manual"
+
+
+class LaneSuggestionsIn(BaseModel):
+    intent: Optional[str] = None
 
 
 class WriteWorkspaceFileIn(BaseModel):
